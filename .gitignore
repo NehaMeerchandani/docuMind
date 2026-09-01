@@ -1,0 +1,159 @@
+# =========================
+
+# Python
+
+# =========================
+
+**pycache**/
+*.py[cod]
+*$py.class
+*.so
+
+# Python virtual environments
+
+venv/
+.venv/
+env/
+ENV/
+.env/
+.python-version
+
+# =========================
+
+# Environment / Secrets
+
+# =========================
+
+.env
+.env.*
+!.env.example
+
+# =========================
+
+# Django
+
+# =========================
+
+*.log
+db.sqlite3
+db.sqlite3-journal
+local_settings.py
+
+# Django static/media files (collected output only — our hand-written
+# static/ source folder, e.g. static/admin/js/chat.js, stays tracked)
+
+/staticfiles/
+/media/
+
+# =========================
+
+# Testing / Coverage
+
+# =========================
+
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache/
+coverage.xml
+*.cover
+
+# =========================
+
+# Type checkers / Linters
+
+# =========================
+
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+
+.ruff_cache/
+
+# =========================
+
+# IDEs / Editors
+
+# =========================
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# VS Code local settings
+
+.history/
+
+# =========================
+
+# OS Files
+
+# =========================
+
+.DS_Store
+Thumbs.db
+
+# =========================
+
+# Build / Distribution
+
+# =========================
+
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+pip-wheel-metadata/
+
+# =========================
+
+# Jupyter Notebook
+
+# =========================
+
+.ipynb_checkpoints/
+
+# =========================
+
+# Celery
+
+# =========================
+
+celerybeat-schedule
+
+# =========================
+
+# Docker
+
+# =========================
+
+docker-compose.override.yml
+
+# =========================
+
+# PostgreSQL
+
+# =========================
+
+*.sql
+*.dump
+
+# =========================
+
+# Temporary files
+
+# =========================
+
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
