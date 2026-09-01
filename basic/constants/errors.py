@@ -1,0 +1,10 @@
+class ErrorMessages:
+    INVALID_CREDENTIALS = 'Invalid email or password.'
+    ACCOUNT_INACTIVE = 'This account is inactive.'
+    PERMISSION_DENIED = 'You do not have permission to perform this action.'
+    NOT_FOUND = 'The requested resource was not found.'
+    VALIDATION_FAILED = 'Validation failed.'
+    ALREADY_EXISTS = 'This resource already exists.'
+    TOKEN_EXPIRED = 'Token has expired.'
+    TOKEN_INVALID = 'Invalid or malformed token.'
+    SERVER_ERROR = 'An unexpected error occurred. Please try again later.'
