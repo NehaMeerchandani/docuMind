@@ -3,8 +3,10 @@ import socket
 from urllib.parse import urlparse
 
 from django.core.exceptions import ValidationError
+from django.utils.deconstruct import deconstructible
 
 
+@deconstructible
 class SSRFSafeURLValidator:
     ALLOWED_SCHEMES = {'http', 'https'}
 
