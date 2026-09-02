@@ -21,6 +21,7 @@ api_v1_patterns = [
     path('companies/', include('company.urls')),
     path('auth/', include('user.urls')),
     path('documents/', include('document.urls')),
+    path('chat/', include('chat.urls')),
 ]
 
 urlpatterns = [

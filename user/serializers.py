@@ -46,12 +46,14 @@ class RegisterSerializer(serializers.ModelSerializer):
         validated_data.pop('password_confirm')
         password = validated_data.pop('password')
 
-        user = CustomUser(**validated_data)
+        user = CustomUser(**validated_data, is_staff=True)
         user.set_password(password)
         user.save()
 
         for company in companies:
-            CompanyMembership.objects.create(user=user, company=company, role=CompanyRoles.MEMBER)
+            CompanyMembership.objects.create(
+                user=user, company=company, role=CompanyRoles.MEMBER, created_by=user,
+            )
 
         return user
 

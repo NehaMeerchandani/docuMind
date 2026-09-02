@@ -1,0 +1,40 @@
+{% if not is_popup %}
+    {% block header %}
+        <div class="border-b border-gray-200 mb-6 px-4 lg:px-12 dark:border-gray-800">
+            <div class="container flex items-center h-16 mx-auto py-4">
+                <div id="header-inner" class="flex items-center w-full">
+                    <div class="flex items-center w-full">
+                        {% if available_companies %}
+                            <form method="post" action="{% url 'admin:set_active_company' %}" style="margin-right: 16px;">
+                                {% csrf_token %}
+                                <select
+                                    name="company_id"
+                                    onchange="this.form.submit()"
+                                    style="padding: 6px 10px; border-radius: 6px; border: 1px solid #4b5563; background: #111827; color: #f3f4f6; font-size: 13px;"
+                                >
+                                    {% for company in available_companies %}
+                                        <option value="{{ company.id }}" {% if active_company.id == company.id %}selected{% endif %}>
+                                            {{ company.name }}
+                                        </option>
+                                    {% endfor %}
+                                </select>
+                            </form>
+                        {% endif %}
+
+                        {% block usertools %}
+                            {% if has_permission %}
+                                {% block welcome-msg %}
+                                    {% include 'unfold/helpers/welcomemsg.html' %}
+                                {% endblock %}
+
+                                {% block userlinks %}
+                                    {% include 'unfold/helpers/userlinks.html' %}
+                                {% endblock %}
+                            {% endif %}
+                        {% endblock %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    {% endblock %}
+{% endif %}

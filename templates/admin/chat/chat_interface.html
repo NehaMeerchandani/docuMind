@@ -1,0 +1,207 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block title %}Chat{% endblock %}
+
+{% block extrahead %}
+  {{ block.super }}
+  <style>
+    .chat-app {
+      display: flex;
+      gap: 16px;
+      height: calc(100vh - 160px);
+      min-height: 500px;
+    }
+    .chat-sidebar {
+      width: 240px;
+      flex: 0 0 240px;
+      display: flex;
+      flex-direction: column;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .chat-sidebar-header {
+      padding: 12px;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    .chat-new-btn {
+      width: 100%;
+      background: rgb(147 51 234);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .chat-new-btn:hover { background: rgb(126 34 206); }
+    .chat-conversation-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+    }
+    .chat-conversation-item {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: none;
+      border: none;
+      padding: 8px;
+      border-radius: 6px;
+      font-size: 13px;
+      color: #374151;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .chat-conversation-item:hover { background: #f3f4f6; }
+    .chat-conversation-item.active { background: #f3f4f6; font-weight: 600; }
+    .chat-main {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .chat-toolbar {
+      padding: 12px;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    #chat-company {
+      padding: 6px 8px;
+      font-size: 13px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      background: #fff;
+      color: #111827;
+    }
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .chat-bubble {
+      max-width: 75%;
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: 13px;
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+    .chat-bubble.user {
+      align-self: flex-end;
+      background: rgb(147 51 234);
+      color: #fff;
+    }
+    .chat-bubble.assistant {
+      align-self: flex-start;
+      background: #f3f4f6;
+      color: #111827;
+    }
+    .chat-form {
+      display: flex;
+      gap: 8px;
+      padding: 12px;
+      border-top: 1px solid #e5e7eb;
+    }
+    #chat-input {
+      flex: 1;
+      padding: 8px 12px;
+      font-size: 13px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      background: #fff;
+      color: #111827;
+    }
+    .chat-send-btn {
+      background: rgb(147 51 234);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .chat-send-btn:hover { background: rgb(126 34 206); }
+
+    html.dark .chat-sidebar,
+    html.dark .chat-main {
+      background: #111827;
+      border-color: #374151;
+    }
+    html.dark .chat-sidebar-header,
+    html.dark .chat-toolbar,
+    html.dark .chat-form {
+      border-color: #374151;
+    }
+    html.dark .chat-conversation-item { color: #d1d5db; }
+    html.dark .chat-conversation-item:hover,
+    html.dark .chat-conversation-item.active {
+      background: #1f2937;
+    }
+    html.dark #chat-company,
+    html.dark #chat-input {
+      background: #1f2937;
+      border-color: #374151;
+      color: #f3f4f6;
+    }
+    html.dark .chat-bubble.assistant {
+      background: #1f2937;
+      color: #f3f4f6;
+    }
+  </style>
+  <script src="{% static 'admin/js/chat.js' %}" defer></script>
+{% endblock %}
+
+{% block content %}
+  <input type="hidden" id="csrf-token" value="{{ csrf_token }}">
+
+  <div
+    id="chat-app"
+    class="chat-app"
+    data-stream-url="{% url 'admin:chat_interface_stream' %}"
+    data-conversations-url="{% url 'admin:chat_interface_conversations' %}"
+    data-messages-url-template="{% url 'admin:chat_interface_conversation_messages' session_id='00000000-0000-0000-0000-000000000000' %}"
+  >
+    <aside class="chat-sidebar">
+      <div class="chat-sidebar-header">
+        <button id="new-chat-btn" type="button" class="chat-new-btn">+ New chat</button>
+      </div>
+      <div id="conversation-list" class="chat-conversation-list"></div>
+    </aside>
+
+    <main class="chat-main">
+      <div class="chat-toolbar">
+        {% if active_company %}
+          Chatting about: <strong>{{ active_company.name }}</strong>
+          <span style="opacity: 0.6;">(switch companies from the dropdown, top right)</span>
+        {% else %}
+          <span style="color: #dc2626;">No company selected — pick one from the dropdown, top right.</span>
+        {% endif %}
+      </div>
+
+      <div id="chat-messages" class="chat-messages"></div>
+
+      <form id="chat-form" class="chat-form">
+        <input
+          type="text"
+          id="chat-input"
+          autocomplete="off"
+          placeholder="Ask a question about this company's documents..."
+        >
+        <button type="submit" class="chat-send-btn">Send</button>
+      </form>
+    </main>
+  </div>
+{% endblock %}

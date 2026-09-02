@@ -51,7 +51,7 @@ class DocumentProcessView(EnvelopeResponseMixin, APIView):
             return APIResponse.error('You are not a member of this company.', status_code=status.HTTP_403_FORBIDDEN)
 
         try:
-            DocumentService.process(document)
+            DocumentService.process(document, user=request.user)
         except Exception as exc:
             return APIResponse.error(str(exc), status_code=status.HTTP_400_BAD_REQUEST)
 

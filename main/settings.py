@@ -5,6 +5,7 @@ Django settings for main project.
 import os
 from pathlib import Path
 
+from django.urls import reverse_lazy
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,7 +16,7 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 
 DEBUG = os.getenv('DEBUG', 'False') == 'True'
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'testserver']
 
 
 INSTALLED_APPS = [
@@ -54,7 +55,7 @@ ROOT_URLCONF = 'main.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -62,6 +63,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'base.context_processors.active_company_context',
             ],
         },
     },
@@ -99,6 +101,7 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = 'static/'
+STATICFILES_DIRS = [BASE_DIR / 'static']
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -127,4 +130,52 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG
 UNFOLD = {
     'SITE_TITLE': 'RAG Admin',
     'SITE_HEADER': 'RAG Admin',
+    'SIDEBAR': {
+        'show_search': True,
+        'navigation': [
+            {
+                'title': 'Chat',
+                'items': [
+                    {
+                        'title': 'Chat',
+                        'icon': 'chat',
+                        'link': reverse_lazy('admin:chat_interface'),
+                    },
+                    {
+                        'title': 'Documents',
+                        'icon': 'description',
+                        'link': reverse_lazy('admin:document_document_changelist'),
+                    },
+                    {
+                        'title': 'Chunks',
+                        'icon': 'segment',
+                        'link': reverse_lazy('admin:document_chunk_changelist'),
+                    },
+                ],
+            },
+            {
+                'title': 'Administration',
+                'items': [
+                    {
+                        'title': 'Companies',
+                        'icon': 'business',
+                        'link': reverse_lazy('admin:company_company_changelist'),
+                        'permission': 'main.nav_permissions.is_full_admin',
+                    },
+                    {
+                        'title': 'Users',
+                        'icon': 'people',
+                        'link': reverse_lazy('admin:user_customuser_changelist'),
+                        'permission': 'main.nav_permissions.is_full_admin',
+                    },
+                    {
+                        'title': 'Conversations',
+                        'icon': 'forum',
+                        'link': reverse_lazy('admin:chat_conversation_changelist'),
+                        'permission': 'main.nav_permissions.is_full_admin',
+                    },
+                ],
+            },
+        ],
+    },
 }

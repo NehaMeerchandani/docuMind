@@ -1,4 +1,4 @@
-from document.models import Chunk, DocumentStatus
+from document.models import Chunk, DocumentStatus, DocumentType
 from document.services.chunking_service import ChunkingService
 from document.services.embedding_service import EmbeddingService
 from document.services.parser_service import ParserService
@@ -6,15 +6,23 @@ from document.services.parser_service import ParserService
 
 class DocumentService:
     @classmethod
-    def process(cls, document):
-        if document.status != DocumentStatus.PENDING:
+    def process(cls, document, user=None):
+        if document.status == DocumentStatus.COMPLETED:
             raise ValueError('This document has already been processed.')
 
+        document.chunks.all().delete()
+
         document.status = DocumentStatus.PROCESSING
-        document.save(update_fields=['status'])
+        if user is not None:
+            document.updated_by = user
+        document.save(update_fields=['status', 'updated_by'] if user is not None else ['status'])
 
         try:
-            doc_type, text = ParserService.fetch_and_parse(document.source_url)
+            if document.source_url:
+                doc_type, text = ParserService.fetch_and_parse(document.source_url)
+            else:
+                doc_type, text = DocumentType.TEXT, document.content
+
             chunks_text = ChunkingService.split_text(text)
 
             if not chunks_text:

@@ -43,7 +43,8 @@ class DocumentManager(SoftDeleteManager):
 
 
 class Document(CompanyBaseModel):
-    source_url = models.URLField(max_length=2048, validators=[SSRFSafeURLValidator()])
+    source_url = models.URLField(max_length=2048, blank=True, validators=[SSRFSafeURLValidator()])
+    content = models.TextField(blank=True)
     title = models.CharField(max_length=255, blank=True)
     doc_type = models.CharField(max_length=20, choices=DocumentType.CHOICES, blank=True)
     status = models.CharField(max_length=20, choices=DocumentStatus.CHOICES, default=DocumentStatus.PENDING)
@@ -55,7 +56,7 @@ class Document(CompanyBaseModel):
         ordering = ['-id']
 
     def __str__(self):
-        return self.title or self.source_url
+        return self.title or self.source_url or f'Document {self.pk}'
 
     def delete(self, using=None, keep_parents=False):
         self.chunks.all().delete()
