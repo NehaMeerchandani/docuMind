@@ -28,6 +28,45 @@ document.addEventListener('DOMContentLoaded', function () {
     return div;
   }
 
+  function appendAssistantContainer() {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'chat-bubble assistant';
+
+    const toolLog = document.createElement('div');
+    toolLog.className = 'chat-tool-log';
+
+    const textEl = document.createElement('span');
+
+    wrapper.appendChild(toolLog);
+    wrapper.appendChild(textEl);
+    messagesEl.appendChild(wrapper);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+
+    return { wrapper: wrapper, toolLog: toolLog, textEl: textEl };
+  }
+
+  function addToolStartEntry(toolLog, toolName) {
+    const entry = document.createElement('div');
+    entry.className = 'chat-tool-entry pending';
+    entry.dataset.toolName = toolName;
+    entry.textContent = '\u{1F527} Calling tool: ' + toolName + '...';
+    toolLog.appendChild(entry);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function markToolEnded(toolLog, toolName, resultPreview) {
+    const entries = toolLog.querySelectorAll(
+      '.chat-tool-entry.pending[data-tool-name="' + toolName + '"]',
+    );
+    const entry = entries[entries.length - 1];
+    if (!entry) {
+      return;
+    }
+    entry.className = 'chat-tool-entry done';
+    entry.textContent = '\u2705 ' + toolName + ' \u2192 ' + resultPreview;
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
   async function loadConversations() {
     const response = await fetch(conversationsUrl);
     const body = await response.json();
@@ -89,7 +128,8 @@ document.addEventListener('DOMContentLoaded', function () {
     input.value = '';
     input.disabled = true;
 
-    const assistantEl = appendMessage('assistant', '');
+    const assistant = appendAssistantContainer();
+    const assistantEl = assistant.textEl;
     const wasNewConversation = !sessionId;
 
     const response = await fetch(streamUrl, {
@@ -143,7 +183,11 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         const parsed = JSON.parse(payload);
-        if (parsed.content) {
+        if (parsed.tool_start) {
+          addToolStartEntry(assistant.toolLog, parsed.tool_start.name);
+        } else if (parsed.tool_end) {
+          markToolEnded(assistant.toolLog, parsed.tool_end.name, parsed.tool_end.result_preview);
+        } else if (parsed.content) {
           assistantEl.textContent += parsed.content;
           messagesEl.scrollTop = messagesEl.scrollHeight;
         } else if (parsed.error) {
