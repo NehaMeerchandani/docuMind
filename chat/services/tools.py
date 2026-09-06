@@ -47,13 +47,19 @@ def make_summarize_session_tool(conversation):
         if not messages:
             return 'There is nothing in this conversation yet to summarize.'
 
-        transcript = '\n'.join(f'{message.sender}: {message.content}' for message in messages)
+        transcript = '\n'.join(f'{message.role}: {message.message}' for message in messages)
 
         llm = get_chat_model()
         response = await llm.ainvoke([
             {'role': 'system', 'content': 'Summarize the following conversation concisely, in a few sentences.'},
             {'role': 'user', 'content': transcript},
         ])
-        return response.content
+        summary = response.content
+
+        # Overwritten each time -- only the latest summary is kept, not a history of them.
+        conversation.summary = summary
+        await sync_to_async(conversation.save)(update_fields=['summary'])
+
+        return summary
 
     return summarize_session

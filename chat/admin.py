@@ -16,8 +16,8 @@ from chat.services.chat_service import ChatService
 
 class MessageInline(TabularInline):
     model = Message
-    fields = ['sender', 'message_type', 'tool_name', 'content', 'created_at']
-    readonly_fields = ['sender', 'message_type', 'tool_name', 'content', 'created_at']
+    fields = ['role', 'message_type', 'tool_name', 'message', 'created_at']
+    readonly_fields = ['role', 'message_type', 'tool_name', 'message', 'created_at']
     extra = 0
     can_delete = False
 
@@ -50,7 +50,7 @@ def conversation_messages_view(request, session_id):
         return JsonResponse({'success': False, 'error': 'Conversation not found.', 'data': None}, status=404)
 
     messages = list(
-        conversation.messages.values('id', 'sender', 'message_type', 'content', 'tool_name', 'created_at'),
+        conversation.messages.values('id', 'role', 'message_type', 'message', 'tool_name', 'created_at'),
     )
     return JsonResponse({
         'success': True,
@@ -102,10 +102,25 @@ class AdminChatStreamView(View):
 
 @admin.register(Conversation)
 class ConversationAdmin(AuditableAdminMixin, ModelAdmin):
-    list_display = ['session_id', 'title', 'user', 'company', 'created_at']
+    list_display = ['session_id', 'title', 'company', 'user', 'created_at']
     list_filter = ['company']
     search_fields = ['title', 'user__email']
     inlines = [MessageInline]
+
+    fieldsets = (
+        ('Details', {
+            'classes': ('tab',),
+            'fields': ('title', 'company', 'user', 'summary', 'is_active'),
+        }),
+        ('Audit info', {
+            'classes': ('tab',),
+            'fields': (
+                'created_by', 'updated_by', 'created_at', 'updated_at',
+                'is_deleted', 'deleted_at',
+            ),
+        }),
+    )
+    readonly_fields = ['created_at', 'updated_at']
 
     def get_queryset(self, request):
         return Conversation.all_objects.all()
@@ -138,9 +153,24 @@ class ConversationAdmin(AuditableAdminMixin, ModelAdmin):
 
 @admin.register(Message)
 class MessageAdmin(AuditableAdminMixin, ModelAdmin):
-    list_display = ['id', 'conversation', 'sender', 'message_type', 'created_at']
-    list_filter = ['sender', 'message_type']
-    search_fields = ['content']
+    list_display = ['id', 'conversation', 'role', 'message_type', 'tool_name', 'created_at']
+    list_filter = ['role', 'message_type']
+    search_fields = ['message']
+
+    fieldsets = (
+        ('Details', {
+            'classes': ('tab',),
+            'fields': ('conversation', 'role', 'message_type', 'tool_name', 'message', 'is_active'),
+        }),
+        ('Audit info', {
+            'classes': ('tab',),
+            'fields': (
+                'created_by', 'updated_by', 'created_at', 'updated_at',
+                'is_deleted', 'deleted_at',
+            ),
+        }),
+    )
+    readonly_fields = ['created_at', 'updated_at']
 
     def get_queryset(self, request):
         return Message.all_objects.all()

@@ -3,26 +3,34 @@ import json
 from asgiref.sync import sync_to_async
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 
-from chat.models import Message, MessageSender, MessageType
+from chat.models import Message, MessageRole, MessageType
 from chat.services.agent import build_agent, get_langfuse_handler
 from chat.services.prompt_service import PromptService
 
 TOOL_RESULT_PREVIEW_LENGTH = 200
 NO_TOOL_MARKER = 'no_tool'
 
+# If the user's question contains this phrase (case-insensitive), the agent is given
+# only the conversation's stored summary as context, instead of recent message history.
+# The two are never combined -- see ChatService.stream_reply.
+USE_SUMMARY_PHRASE = 'use summary'
+
 
 class ChatService:
 
     @classmethod
     async def stream_reply(cls, conversation, company, question):
-        history = await sync_to_async(PromptService.build_history)(conversation)
+        if USE_SUMMARY_PHRASE in question.lower():
+            history = await sync_to_async(PromptService.build_summary_context)(conversation)
+        else:
+            history = await sync_to_async(PromptService.build_history)(conversation)
 
         await Message.objects.acreate(
             company=company,
             conversation=conversation,
-            sender=MessageSender.USER,
+            role=MessageRole.USER,
             message_type=MessageType.TEXT,
-            content=question,
+            message=question,
             created_by_id=conversation.user_id,
         )
 
@@ -58,10 +66,10 @@ class ChatService:
                         await Message.objects.acreate(
                             company=company,
                             conversation=conversation,
-                            sender=MessageSender.ASSISTANT,
+                            role=MessageRole.ASSISTANT,
                             message_type=MessageType.TOOL,
                             tool_name=tool_name,
-                            content=result_preview,
+                            message=result_preview,
                         )
                         yield f'data: {json.dumps({"tool_end": {"name": tool_name, "result_preview": result_preview}})}\n\n'
                     continue
@@ -87,9 +95,9 @@ class ChatService:
             await Message.objects.acreate(
                 company=company,
                 conversation=conversation,
-                sender=MessageSender.ASSISTANT,
+                role=MessageRole.ASSISTANT,
                 message_type=MessageType.ERROR,
-                content=error_message,
+                message=error_message,
             )
             yield f'data: {json.dumps({"error": error_message})}\n\n'
             return
@@ -98,18 +106,18 @@ class ChatService:
             await Message.objects.acreate(
                 company=company,
                 conversation=conversation,
-                sender=MessageSender.ASSISTANT,
+                role=MessageRole.ASSISTANT,
                 message_type=MessageType.TOOL,
                 tool_name=NO_TOOL_MARKER,
-                content='Answered directly by the model, no tool used.',
+                message='Answered directly by the model, no tool used.',
             )
 
         await Message.objects.acreate(
             company=company,
             conversation=conversation,
-            sender=MessageSender.ASSISTANT,
+            role=MessageRole.ASSISTANT,
             message_type=MessageType.TEXT,
-            content=full_reply,
+            message=full_reply,
         )
 
         yield 'data: [DONE]\n\n'

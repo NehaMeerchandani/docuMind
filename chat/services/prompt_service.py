@@ -3,7 +3,7 @@ import os
 from langchain_core.messages import AIMessage, HumanMessage
 from langfuse import Langfuse
 
-from chat.models import MessageSender, MessageType
+from chat.models import MessageRole, MessageType
 
 FALLBACK_SYSTEM_PROMPT = (
     "You are a helpful assistant for a company's team. You have access to tools:\n\n"
@@ -24,6 +24,8 @@ FALLBACK_SYSTEM_PROMPT = (
 
 
 class PromptService:
+    HISTORY_MESSAGE_LIMIT = 10
+
     _langfuse_client = None
 
     @classmethod
@@ -54,18 +56,41 @@ class PromptService:
 
     @classmethod
     def build_history(cls, conversation):
-        """Turn this conversation's saved TEXT messages into LangChain message objects.
+        """Turn this conversation's last HISTORY_MESSAGE_LIMIT TEXT messages into LangChain
+        message objects.
 
         Only MessageType.TEXT rows are replayed into the agent's memory. ERROR rows are
         deliberately excluded (we don't want a past failure re-entering the model's context),
         and there's no CONTEXT/SYSTEM row type produced by the agent flow (tool results live
         inside the LangGraph run itself, not as persisted Message rows).
+
+        Capped to the most recent messages rather than the full conversation, to keep the
+        prompt small -- for anything older, the user is expected to say "use summary"
+        instead (see ChatService), which uses conversation.summary in place of history.
         """
-        history = conversation.messages.filter(message_type=MessageType.TEXT).order_by('created_at')
+        recent_first = list(conversation.messages.filter(
+            message_type=MessageType.TEXT,
+        ).order_by('-created_at')[:cls.HISTORY_MESSAGE_LIMIT])
+        history = list(reversed(recent_first))
 
         return [
-            HumanMessage(content=message.content)
-            if message.sender == MessageSender.USER
-            else AIMessage(content=message.content)
+            HumanMessage(content=message.message)
+            if message.role == MessageRole.USER
+            else AIMessage(content=message.message)
             for message in history
         ]
+
+    @classmethod
+    def build_summary_context(cls, conversation):
+        """Turn this conversation's stored summary into a single LangChain message.
+
+        Used instead of (never together with) build_history, when the user's question
+        contains the "use summary" trigger phrase -- see ChatService.
+        """
+        if not conversation.summary:
+            return [HumanMessage(
+                content='(There is no saved summary for this conversation yet. '
+                'Let the user know a summary needs to be created first.)',
+            )]
+
+        return [HumanMessage(content=f'Summary of this conversation so far:\n{conversation.summary}')]

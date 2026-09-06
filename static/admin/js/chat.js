@@ -148,8 +148,8 @@ document.addEventListener('DOMContentLoaded', function () {
         return;
       }
 
-      if (message.sender === 'user') {
-        appendMessage('user', message.content);
+      if (message.role === 'user') {
+        appendMessage('user', message.message);
         return;
       }
 
@@ -158,11 +158,11 @@ document.addEventListener('DOMContentLoaded', function () {
         if (toolRow.tool_name === 'no_tool') {
           addNoToolEntry(assistant.toolLog);
         } else {
-          addToolResultEntry(assistant.toolLog, toolRow.tool_name, toolRow.content);
+          addToolResultEntry(assistant.toolLog, toolRow.tool_name, toolRow.message);
         }
       });
       pendingToolRows = [];
-      assistant.textEl.textContent = message.content;
+      assistant.textEl.textContent = message.message;
     });
   }
 

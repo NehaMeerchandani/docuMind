@@ -12,6 +12,7 @@ class MessageType:
     SYSTEM = 'system'
     CONTEXT = 'context'
     TOOL = 'tool'
+    MEDIA = 'media'
 
     CHOICES = (
         (TEXT, 'Text'),
@@ -19,10 +20,11 @@ class MessageType:
         (SYSTEM, 'System'),
         (CONTEXT, 'Context'),
         (TOOL, 'Tool'),
+        (MEDIA, 'Media'),
     )
 
 
-class MessageSender:
+class MessageRole:
     USER = 'user'
     ASSISTANT = 'assistant'
 
@@ -51,6 +53,10 @@ class Conversation(CompanyBaseModel):
         related_name='conversations',
     )
     title = models.CharField(max_length=255, blank=True)
+    summary = models.TextField(
+        blank=True,
+        help_text='Latest session summary, generated on request. Overwritten each time a new summary is created.',
+    )
 
     objects = ConversationManager()
 
@@ -67,9 +73,9 @@ class Conversation(CompanyBaseModel):
 
 class Message(CompanyBaseModel):
     conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='messages')
-    sender = models.CharField(max_length=20, choices=MessageSender.CHOICES)
+    role = models.CharField(max_length=20, choices=MessageRole.CHOICES)
     message_type = models.CharField(max_length=20, choices=MessageType.CHOICES, default=MessageType.TEXT)
-    content = models.TextField(blank=True)
+    message = models.TextField(blank=True)
     tool_name = models.CharField(max_length=100, blank=True)
 
     class Meta:
@@ -78,4 +84,4 @@ class Message(CompanyBaseModel):
     def __str__(self):
         if self.message_type == MessageType.TOOL:
             return f'tool: {self.tool_name}'
-        return f'{self.sender}: {self.content[:50]}'
+        return f'{self.role}: {self.message[:50]}'

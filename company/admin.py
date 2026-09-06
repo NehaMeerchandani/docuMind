@@ -28,6 +28,21 @@ class CompanyAdmin(AuditableAdminMixin, ModelAdmin):
     list_filter = ['is_active', 'is_deleted']
     search_fields = ['name']
 
+    fieldsets = (
+        ('Details', {
+            'classes': ('tab',),
+            'fields': ('name', 'is_active'),
+        }),
+        ('Audit info', {
+            'classes': ('tab',),
+            'fields': (
+                'created_by', 'updated_by', 'created_at', 'updated_at',
+                'is_deleted', 'deleted_at',
+            ),
+        }),
+    )
+    readonly_fields = ['created_at', 'updated_at']
+
     def get_queryset(self, request):
         return Company.all_objects.all()
 

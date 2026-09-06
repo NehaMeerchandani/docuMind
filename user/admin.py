@@ -47,6 +47,21 @@ class CustomUserAdmin(UserAdmin, ModelAdmin):
 
 @admin.register(RefreshToken)
 class RefreshTokenAdmin(AuditableAdminMixin, ModelAdmin):
-    list_display = ['id', 'user', 'is_revoked', 'expires_at', 'created_at']
+    list_display = ['id', 'user', 'expires_at', 'is_revoked', 'created_at']
     list_filter = ['is_revoked']
     search_fields = ['user__email']
+
+    fieldsets = (
+        ('Details', {
+            'classes': ('tab',),
+            'fields': ('user', 'token', 'expires_at', 'is_revoked', 'is_active'),
+        }),
+        ('Audit info', {
+            'classes': ('tab',),
+            'fields': (
+                'created_by', 'updated_by', 'created_at', 'updated_at',
+                'is_deleted', 'deleted_at',
+            ),
+        }),
+    )
+    readonly_fields = ['created_at', 'updated_at']

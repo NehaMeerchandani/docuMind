@@ -1,0 +1,107 @@
+.doc-status-badge {
+  display: inline-block;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 4px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.doc-status-badge--pending {
+  background: #fef3c7;
+  color: #b45309;
+}
+.doc-status-badge--processing {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+.doc-status-badge--completed {
+  background: #dcfce7;
+  color: #15803d;
+}
+.doc-status-badge--failed {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.doc-process-btn {
+  display: inline-block;
+  color: #fff;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.doc-process-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.doc-process-btn--busy {
+  opacity: 0.75;
+}
+.doc-process-btn--done {
+  background: #9ca3af !important;
+}
+.doc-process-btn--sync {
+  background: rgb(147 51 234);
+}
+.doc-process-btn--sync:hover:not(:disabled) {
+  background: rgb(126 34 206);
+}
+.doc-process-btn--celery {
+  background: rgb(22 163 74);
+}
+.doc-process-btn--celery:hover:not(:disabled) {
+  background: rgb(21 128 61);
+}
+.doc-process-btn--kafka {
+  background: rgb(37 99 235);
+}
+.doc-process-btn--kafka:hover:not(:disabled) {
+  background: rgb(29 78 216);
+}
+
+.doc-process-toast {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background: #111827;
+  color: #fff;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  max-width: 360px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: 9999;
+}
+.doc-process-toast--visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+.doc-process-toast--error {
+  background: #b91c1c;
+}
+
+html.dark .doc-status-badge--pending {
+  background: rgba(180, 83, 9, 0.2);
+  color: #fbbf24;
+}
+html.dark .doc-status-badge--processing {
+  background: rgba(29, 78, 216, 0.2);
+  color: #60a5fa;
+}
+html.dark .doc-status-badge--completed {
+  background: rgba(21, 128, 61, 0.2);
+  color: #4ade80;
+}
+html.dark .doc-status-badge--failed {
+  background: rgba(185, 28, 28, 0.2);
+  color: #f87171;
+}

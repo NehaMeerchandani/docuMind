@@ -85,6 +85,7 @@ class ChatStreamView(View):
         )
         response['Cache-Control'] = 'no-cache'
         response['X-Accel-Buffering'] = 'no'
+        response['X-Session-Id'] = str(conversation.session_id)
         return response
 
     async def _authenticate(self, request):
