@@ -20,6 +20,7 @@ class Command(BaseCommand):
             name='rag-system-prompt',
             prompt=FALLBACK_SYSTEM_PROMPT,
             labels=['production'],
+            config={'provider': 'deepseek', 'model': 'deepseek-chat', 'temperature': 0.2},
         )
 
         self.stdout.write(self.style.SUCCESS('Synced rag-system-prompt to LangFuse.'))

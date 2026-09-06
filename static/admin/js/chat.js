@@ -22,7 +22,16 @@ document.addEventListener('DOMContentLoaded', function () {
   function appendMessage(role, text) {
     const div = document.createElement('div');
     div.className = 'chat-bubble ' + (role === 'user' ? 'user' : 'assistant');
-    div.textContent = text;
+
+    const label = document.createElement('div');
+    label.className = 'chat-bubble-label';
+    label.textContent = role === 'user' ? 'You' : 'Assistant';
+
+    const textEl = document.createElement('span');
+    textEl.textContent = text;
+
+    div.appendChild(label);
+    div.appendChild(textEl);
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return div;
@@ -32,11 +41,16 @@ document.addEventListener('DOMContentLoaded', function () {
     const wrapper = document.createElement('div');
     wrapper.className = 'chat-bubble assistant';
 
+    const label = document.createElement('div');
+    label.className = 'chat-bubble-label';
+    label.textContent = 'Assistant';
+
     const toolLog = document.createElement('div');
     toolLog.className = 'chat-tool-log';
 
     const textEl = document.createElement('span');
 
+    wrapper.appendChild(label);
     wrapper.appendChild(toolLog);
     wrapper.appendChild(textEl);
     messagesEl.appendChild(wrapper);
@@ -60,10 +74,27 @@ document.addEventListener('DOMContentLoaded', function () {
     );
     const entry = entries[entries.length - 1];
     if (!entry) {
+      addToolResultEntry(toolLog, toolName, resultPreview);
       return;
     }
     entry.className = 'chat-tool-entry done';
     entry.textContent = '\u2705 ' + toolName + ' \u2192 ' + resultPreview;
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function addToolResultEntry(toolLog, toolName, resultPreview) {
+    const entry = document.createElement('div');
+    entry.className = 'chat-tool-entry done';
+    entry.textContent = '\u2705 ' + toolName + ' \u2192 ' + resultPreview;
+    toolLog.appendChild(entry);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function addNoToolEntry(toolLog) {
+    const entry = document.createElement('div');
+    entry.className = 'chat-tool-entry no-tool';
+    entry.textContent = '\u{1F9ED} Answered directly by the model \u2014 no tool used';
+    toolLog.appendChild(entry);
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
@@ -94,15 +125,45 @@ document.addEventListener('DOMContentLoaded', function () {
     const body = await response.json();
 
     if (body.success) {
-      (body.data.messages || []).forEach(function (message) {
-        if (message.message_type === 'text') {
-          appendMessage(message.sender, message.content);
-        }
-      });
+      renderHistory(body.data.messages || []);
     }
 
     loadConversations();
     input.focus();
+  }
+
+  function renderHistory(messages) {
+    // Tool rows for a given assistant turn are saved right before that turn's final
+    // text reply, so we buffer them and flush into the same bubble once the text row
+    // for that turn arrives (mirrors how appendAssistantContainer groups them live).
+    let pendingToolRows = [];
+
+    messages.forEach(function (message) {
+      if (message.message_type === 'tool') {
+        pendingToolRows.push(message);
+        return;
+      }
+
+      if (message.message_type !== 'text') {
+        return;
+      }
+
+      if (message.sender === 'user') {
+        appendMessage('user', message.content);
+        return;
+      }
+
+      const assistant = appendAssistantContainer();
+      pendingToolRows.forEach(function (toolRow) {
+        if (toolRow.tool_name === 'no_tool') {
+          addNoToolEntry(assistant.toolLog);
+        } else {
+          addToolResultEntry(assistant.toolLog, toolRow.tool_name, toolRow.content);
+        }
+      });
+      pendingToolRows = [];
+      assistant.textEl.textContent = message.content;
+    });
   }
 
   newChatBtn.addEventListener('click', function () {
@@ -131,6 +192,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const assistant = appendAssistantContainer();
     const assistantEl = assistant.textEl;
     const wasNewConversation = !sessionId;
+    let anyToolUsed = false;
 
     const response = await fetch(streamUrl, {
       method: 'POST',
@@ -184,6 +246,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const parsed = JSON.parse(payload);
         if (parsed.tool_start) {
+          anyToolUsed = true;
           addToolStartEntry(assistant.toolLog, parsed.tool_start.name);
         } else if (parsed.tool_end) {
           markToolEnded(assistant.toolLog, parsed.tool_end.name, parsed.tool_end.result_preview);
@@ -194,6 +257,10 @@ document.addEventListener('DOMContentLoaded', function () {
           assistantEl.textContent += '\n[Error: ' + parsed.error + ']';
         }
       }
+    }
+
+    if (!anyToolUsed) {
+      addNoToolEntry(assistant.toolLog);
     }
 
     input.disabled = false;

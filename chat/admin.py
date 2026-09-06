@@ -16,8 +16,8 @@ from chat.services.chat_service import ChatService
 
 class MessageInline(TabularInline):
     model = Message
-    fields = ['sender', 'message_type', 'content', 'created_at']
-    readonly_fields = ['sender', 'message_type', 'content', 'created_at']
+    fields = ['sender', 'message_type', 'tool_name', 'content', 'created_at']
+    readonly_fields = ['sender', 'message_type', 'tool_name', 'content', 'created_at']
     extra = 0
     can_delete = False
 
@@ -50,7 +50,7 @@ def conversation_messages_view(request, session_id):
         return JsonResponse({'success': False, 'error': 'Conversation not found.', 'data': None}, status=404)
 
     messages = list(
-        conversation.messages.values('id', 'sender', 'message_type', 'content', 'created_at'),
+        conversation.messages.values('id', 'sender', 'message_type', 'content', 'tool_name', 'created_at'),
     )
     return JsonResponse({
         'success': True,

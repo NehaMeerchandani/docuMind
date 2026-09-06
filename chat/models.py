@@ -11,12 +11,14 @@ class MessageType:
     ERROR = 'error'
     SYSTEM = 'system'
     CONTEXT = 'context'
+    TOOL = 'tool'
 
     CHOICES = (
         (TEXT, 'Text'),
         (ERROR, 'Error'),
         (SYSTEM, 'System'),
         (CONTEXT, 'Context'),
+        (TOOL, 'Tool'),
     )
 
 
@@ -68,9 +70,12 @@ class Message(CompanyBaseModel):
     sender = models.CharField(max_length=20, choices=MessageSender.CHOICES)
     message_type = models.CharField(max_length=20, choices=MessageType.CHOICES, default=MessageType.TEXT)
     content = models.TextField(blank=True)
+    tool_name = models.CharField(max_length=100, blank=True)
 
     class Meta:
         ordering = ['created_at']
 
     def __str__(self):
+        if self.message_type == MessageType.TOOL:
+            return f'tool: {self.tool_name}'
         return f'{self.sender}: {self.content[:50]}'

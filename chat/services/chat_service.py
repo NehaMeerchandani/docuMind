@@ -8,6 +8,7 @@ from chat.services.agent import build_agent, get_langfuse_handler
 from chat.services.prompt_service import PromptService
 
 TOOL_RESULT_PREVIEW_LENGTH = 200
+NO_TOOL_MARKER = 'no_tool'
 
 
 class ChatService:
@@ -44,6 +45,7 @@ class ChatService:
 
         full_reply = ''
         started_tool_call_ids = set()
+        any_tool_used = False
 
         try:
             async for stream_mode, payload in agent.astream(
@@ -52,8 +54,16 @@ class ChatService:
                 stream_mode=['messages', 'updates'],
             ):
                 if stream_mode == 'updates':
-                    for event in cls._tool_end_events(payload):
-                        yield event
+                    for tool_name, result_preview in cls._tool_end_results(payload):
+                        await Message.objects.acreate(
+                            company=company,
+                            conversation=conversation,
+                            sender=MessageSender.ASSISTANT,
+                            message_type=MessageType.TOOL,
+                            tool_name=tool_name,
+                            content=result_preview,
+                        )
+                        yield f'data: {json.dumps({"tool_end": {"name": tool_name, "result_preview": result_preview}})}\n\n'
                     continue
 
                 message_chunk, metadata = payload
@@ -64,6 +74,7 @@ class ChatService:
                     continue
 
                 for event in cls._tool_start_events(message_chunk, started_tool_call_ids):
+                    any_tool_used = True
                     yield event
 
                 delta = message_chunk.content
@@ -82,6 +93,16 @@ class ChatService:
             )
             yield f'data: {json.dumps({"error": error_message})}\n\n'
             return
+
+        if not any_tool_used:
+            await Message.objects.acreate(
+                company=company,
+                conversation=conversation,
+                sender=MessageSender.ASSISTANT,
+                message_type=MessageType.TOOL,
+                tool_name=NO_TOOL_MARKER,
+                content='Answered directly by the model, no tool used.',
+            )
 
         await Message.objects.acreate(
             company=company,
@@ -114,8 +135,8 @@ class ChatService:
             yield f'data: {json.dumps({"tool_start": {"name": name}})}\n\n'
 
     @classmethod
-    def _tool_end_events(cls, updates_payload):
-        """Emit a `tool_end` event once a tool node finishes and its ToolMessage lands.
+    def _tool_end_results(cls, updates_payload):
+        """Yield (tool_name, result_preview) once a tool node finishes and its ToolMessage lands.
 
         `updates_payload` is the dict LangGraph's `stream_mode="updates"` yields for this
         step: `{node_name: {"messages": [...]}}`. We only care about the `tools` node's
@@ -132,4 +153,4 @@ class ChatService:
             content = message.content if isinstance(message.content, str) else str(message.content)
             preview = content[:TOOL_RESULT_PREVIEW_LENGTH]
 
-            yield f'data: {json.dumps({"tool_end": {"name": message.name, "result_preview": preview}})}\n\n'
+            yield message.name, preview
