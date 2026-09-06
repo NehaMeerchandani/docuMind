@@ -9,6 +9,8 @@ from base.active_company import get_active_company
 from base.admin import AuditableAdminMixin
 from document.models import Chunk, Document, DocumentStatus
 from document.services.document_service import DocumentService
+from document.services.kafka_service import KafkaService
+from document.tasks import process_document_task
 
 
 class ChunkInline(TabularInline):
@@ -23,7 +25,8 @@ class ChunkInline(TabularInline):
 class DocumentAdmin(AuditableAdminMixin, ModelAdmin):
     list_display = [
         'id', 'title', 'company', 'doc_type', 'status_badge',
-        'chunk_count', 'process_link', 'created_by', 'created_at',
+        'chunk_count', 'process_link', 'process_celery_link', 'process_kafka_link',
+        'created_by', 'created_at',
     ]
     list_filter = ['status', 'doc_type']
     search_fields = ['title', 'source_url']
@@ -72,6 +75,16 @@ class DocumentAdmin(AuditableAdminMixin, ModelAdmin):
                 self.admin_site.admin_view(self.process_document_view),
                 name='document_document_process',
             ),
+            path(
+                '<int:object_id>/process-celery/',
+                self.admin_site.admin_view(self.process_document_celery_view),
+                name='document_document_process_celery',
+            ),
+            path(
+                '<int:object_id>/process-kafka/',
+                self.admin_site.admin_view(self.process_document_kafka_view),
+                name='document_document_process_kafka',
+            ),
         ]
         return custom_urls + super().get_urls()
 
@@ -112,6 +125,42 @@ class DocumentAdmin(AuditableAdminMixin, ModelAdmin):
             label,
         )
 
+    @display(description='Celery')
+    def process_celery_link(self, obj):
+        if obj.status == DocumentStatus.COMPLETED:
+            return '-'
+
+        if not self._can_manage(self.request, obj):
+            return '-'
+
+        label = 'Process (Celery)' if obj.status == DocumentStatus.PENDING else 'Retry (Celery)'
+        url = reverse('admin:document_document_process_celery', args=[obj.pk])
+        return format_html(
+            '<a href="{}" style="display:inline-block;background:rgb(22 163 74);color:#fff;'
+            'padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;'
+            'text-decoration:none;white-space:nowrap;">{}</a>',
+            url,
+            label,
+        )
+
+    @display(description='Kafka')
+    def process_kafka_link(self, obj):
+        if obj.status == DocumentStatus.COMPLETED:
+            return '-'
+
+        if not self._can_manage(self.request, obj):
+            return '-'
+
+        label = 'Process (Kafka)' if obj.status == DocumentStatus.PENDING else 'Retry (Kafka)'
+        url = reverse('admin:document_document_process_kafka', args=[obj.pk])
+        return format_html(
+            '<a href="{}" style="display:inline-block;background:rgb(37 99 235);color:#fff;'
+            'padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;'
+            'text-decoration:none;white-space:nowrap;">{}</a>',
+            url,
+            label,
+        )
+
     def process_document_view(self, request, object_id):
         document = Document.all_objects.get(pk=object_id)
 
@@ -128,6 +177,56 @@ class DocumentAdmin(AuditableAdminMixin, ModelAdmin):
             self.message_user(request, f'"{document}" processed successfully.', level=messages.SUCCESS)
         except Exception as exc:
             self.message_user(request, f'Failed to process "{document}": {exc}', level=messages.ERROR)
+
+        return HttpResponseRedirect(reverse('admin:document_document_changelist'))
+
+    def process_document_celery_view(self, request, object_id):
+        document = Document.all_objects.get(pk=object_id)
+
+        if not self._can_manage(request, document):
+            self.message_user(
+                request,
+                'You have not uploaded this document and are not an admin, so you cannot process it.',
+                level=messages.ERROR,
+            )
+            return HttpResponseRedirect(reverse('admin:document_document_changelist'))
+
+        # .delay(...) does NOT run the task now -- it serializes these arguments to JSON
+        # and pushes them onto the Redis queue, then returns immediately. The task only
+        # actually executes once a separate `celery -A main worker` process picks it up.
+        task = process_document_task.delay(document.pk, request.user.pk)
+        self.message_user(
+            request,
+            f'Queued "{document}" for background processing via Celery (task id: {task.id}). '
+            'Refresh this page in a moment to see its status update.',
+            level=messages.SUCCESS,
+        )
+
+        return HttpResponseRedirect(reverse('admin:document_document_changelist'))
+
+    def process_document_kafka_view(self, request, object_id):
+        document = Document.all_objects.get(pk=object_id)
+
+        if not self._can_manage(request, document):
+            self.message_user(
+                request,
+                'You have not uploaded this document and are not an admin, so you cannot process it.',
+                level=messages.ERROR,
+            )
+            return HttpResponseRedirect(reverse('admin:document_document_changelist'))
+
+        # This only publishes an event to the Kafka topic -- it does NOT process the
+        # document itself. A separate consumer process (not running by default; must be
+        # started with `manage.py consume_document_processing`) has to be listening and
+        # pick this event up before anything actually happens to the document.
+        KafkaService.publish_document_processing_event(document.pk, request.user.pk)
+        self.message_user(
+            request,
+            f'Published a processing event for "{document}" to Kafka. '
+            'A consumer process must be running to pick this up -- '
+            'see INFRA_SETUP_GUIDE.md.',
+            level=messages.SUCCESS,
+        )
 
         return HttpResponseRedirect(reverse('admin:document_document_changelist'))
 
