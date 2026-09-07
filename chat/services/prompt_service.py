@@ -45,11 +45,22 @@ class PromptService:
 
     @classmethod
     def get_system_prompt_and_config(cls):
+        return cls.get_prompt_and_config('rag-system-prompt', fallback=FALLBACK_SYSTEM_PROMPT)
+
+    @classmethod
+    def get_prompt_and_config(cls, slug, fallback=''):
+        """Fetch any Langfuse prompt by slug, e.g. a STEP node's `name` (agents/graph/
+        builder.py) or the router's own prompt (agents/services/router_service.py).
+
+        `fallback` is returned verbatim if Langfuse is unreachable or the slug doesn't
+        exist yet there -- this keeps a brand-new STEP node usable immediately after
+        being authored in the editor, before anyone has created its prompt in Langfuse.
+        """
         client = cls.get_langfuse_client()
         prompt = client.get_prompt(
-            'rag-system-prompt',
+            slug,
             label='production',
-            fallback=FALLBACK_SYSTEM_PROMPT,
+            fallback=fallback,
             cache_ttl_seconds=60,
         )
         return prompt.compile(), (prompt.config or {})

@@ -1,0 +1,52 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block title %}Agent Workflow Editor{% endblock %}
+
+{% block extrahead %}
+  {{ block.super }}
+  <link rel="stylesheet" href="{% static 'admin/css/workflow_editor.css' %}">
+  <script src="{% static 'admin/js/workflow_editor.js' %}" defer></script>
+{% endblock %}
+
+{% block content %}
+  <input type="hidden" id="csrf-token" value="{{ csrf_token }}">
+  <script id="tool-choices" type="application/json">
+    {{ tool_choices_json|safe }}
+  </script>
+
+  <div
+    id="workflow-app"
+    class="workflow-app"
+    data-agents-url="{% url 'admin:agents_workflow_editor_list' %}"
+    data-detail-url-template="{% url 'admin:agents_workflow_editor_detail' pk=0 %}"
+    data-save-url="{% url 'admin:agents_workflow_editor_save' %}"
+  >
+    <div class="workflow-toolbar">
+      <div class="workflow-toolbar-group">
+        <label for="agent-select">Agent:</label>
+        <select id="agent-select"></select>
+      </div>
+
+      <button id="btn-new" type="button" class="workflow-btn">+ New</button>
+      <button id="btn-load" type="button" class="workflow-btn">Load</button>
+      <button id="btn-save" type="button" class="workflow-btn workflow-btn--primary">Save</button>
+
+      <div class="workflow-toolbar-group workflow-toolbar-group--grow">
+        <label for="agent-name">Name:</label>
+        <input type="text" id="agent-name" placeholder="Agent name (used as its unique identifier)">
+        <label for="agent-description">Description:</label>
+        <input type="text" id="agent-description" placeholder="Shown to the router -- when should this agent be picked?">
+      </div>
+
+      <button id="btn-add-node" type="button" class="workflow-btn">+ Add Node</button>
+    </div>
+
+    <div id="workflow-status" class="workflow-status"></div>
+
+    <div id="workflow-canvas" class="workflow-canvas">
+      <svg id="workflow-edges" class="workflow-edges"></svg>
+      <div id="workflow-nodes" class="workflow-nodes"></div>
+    </div>
+  </div>
+{% endblock %}

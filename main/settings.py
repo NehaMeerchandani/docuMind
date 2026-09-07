@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     'user',
     'document',
     'chat',
+    'agents',
 ]
 
 MIDDLEWARE = [
@@ -161,6 +162,16 @@ UNFOLD = {
                         'title': 'Chunks',
                         'icon': 'segment',
                         'link': reverse_lazy('admin:document_chunk_changelist'),
+                    },
+                    {
+                        'title': 'Agents',
+                        'icon': 'smart_toy',
+                        'link': reverse_lazy('admin:agents_agent_changelist'),
+                    },
+                    {
+                        'title': 'Workflow Editor',
+                        'icon': 'hub',
+                        'link': reverse_lazy('admin:agents_workflow_editor'),
                     },
                 ],
             },
