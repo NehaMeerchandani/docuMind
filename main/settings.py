@@ -28,6 +28,8 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
 
+    'channels',
+
     'rest_framework',
     'corsheaders',
 
@@ -71,6 +73,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'main.wsgi.application'
+ASGI_APPLICATION = 'main.asgi.application'
 
 
 DATABASES = {
@@ -137,6 +140,27 @@ CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:63
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
+
+
+# --- Channels (WebSocket chat + background document-processing notifications) ---
+
+# Deliberately a different Redis logical DB (1) than Celery's (0, above) -- both are
+# the same physical Redis server, but keeping their keyspaces separate avoids any
+# chance of Channels' pub/sub keys and Celery's queue/result keys colliding or being
+# accidentally flushed together.
+CHANNELS_REDIS_URL = os.getenv('CHANNELS_REDIS_URL', 'redis://localhost:6379/1')
+
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': [CHANNELS_REDIS_URL],
+        },
+    },
+}
+
+
+CHAT_TRANSPORT = os.getenv('CHAT_TRANSPORT', 'sse')
 
 
 UNFOLD = {

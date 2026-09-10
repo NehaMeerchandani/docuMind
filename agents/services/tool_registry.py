@@ -1,4 +1,8 @@
-from chat.services.tools import make_search_documents_tool, make_summarize_session_tool
+from chat.services.tools import (
+    make_list_document_process_tool,
+    make_search_documents_tool,
+    make_summarize_session_tool,
+)
 
 
 class ToolRegistry:
@@ -28,6 +32,10 @@ class ToolRegistry:
         'summarize_session': {
             'label': 'Summarize this conversation',
             'build': lambda company_id, conversation: make_summarize_session_tool(conversation),
+        },
+        'list_document_process': {
+            'label': 'List document processing status',
+            'build': lambda company_id, conversation: make_list_document_process_tool(company_id),
         },
     }
 

@@ -143,6 +143,17 @@
       color: #6b7280;
       font-style: italic;
     }
+    .chat-notification-bubble {
+      align-self: center;
+      max-width: 90%;
+      background: #ecfdf5;
+      border: 1px solid #a7f3d0;
+      color: #065f46;
+      font-style: italic;
+    }
+    .chat-notification-bubble .chat-bubble-label {
+      color: #059669;
+    }
     .chat-form {
       display: flex;
       gap: 8px;
@@ -203,6 +214,14 @@
       background: #1f2937;
       color: #9ca3af;
     }
+    html.dark .chat-notification-bubble {
+      background: #064e3b;
+      border-color: #065f46;
+      color: #a7f3d0;
+    }
+    html.dark .chat-notification-bubble .chat-bubble-label {
+      color: #6ee7b7;
+    }
   </style>
   <script src="{% static 'admin/js/chat.js' %}" defer></script>
 {% endblock %}
@@ -216,6 +235,9 @@
     data-stream-url="{% url 'admin:chat_interface_stream' %}"
     data-conversations-url="{% url 'admin:chat_interface_conversations' %}"
     data-messages-url-template="{% url 'admin:chat_interface_conversation_messages' session_id='00000000-0000-0000-0000-000000000000' %}"
+    data-chat-transport="{{ chat_transport }}"
+    data-ws-scheme="{% if request.is_secure %}wss{% else %}ws{% endif %}"
+    data-ws-host="{{ request.get_host }}"
   >
     <aside class="chat-sidebar">
       <div class="chat-sidebar-header">

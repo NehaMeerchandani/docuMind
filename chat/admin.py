@@ -1,6 +1,7 @@
 import json
 
 from asgiref.sync import sync_to_async
+from django.conf import settings
 from django.contrib import admin
 from django.http import JsonResponse, StreamingHttpResponse
 from django.shortcuts import render
@@ -26,6 +27,10 @@ def chat_interface_view(request):
     context = {
         **admin.site.each_context(request),
         'active_company': get_active_company(request),
+        # Steers which transport static/admin/js/chat.js uses (see main/settings.py) --
+        # both the SSE endpoint below and the ws/chat/<session_id>/ consumer
+        # (chat/consumers.py) are always live regardless of this value.
+        'chat_transport': settings.CHAT_TRANSPORT,
     }
     return render(request, 'admin/chat/chat_interface.html', context)
 

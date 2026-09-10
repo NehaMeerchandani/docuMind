@@ -4,7 +4,7 @@ from langchain_core.tools import tool
 from chat.models import MessageType
 from chat.services.llm_client import get_chat_model
 from chat.services.vector_service import VectorService
-from document.models import Chunk
+from document.models import Chunk, Document, DocumentStatus
 
 
 def make_search_documents_tool(company_id):
@@ -63,3 +63,41 @@ def make_summarize_session_tool(conversation):
         return summary
 
     return summarize_session
+
+
+def make_list_document_process_tool(company_id):
+    @tool
+    async def list_document_process() -> str:
+        """List this company's documents and their processing status (completed,
+        processing, pending, or failed), with counts per status.
+
+        Use this whenever the user asks what documents exist, which have finished
+        processing, or which are still pending/queued/in progress.
+        """
+        documents = await sync_to_async(list)(
+            Document.objects.filter(company_id=company_id).order_by('-id'),
+        )
+
+        if not documents:
+            return 'This company has no uploaded documents yet.'
+
+        counts = {choice_value: 0 for choice_value, _label in DocumentStatus.CHOICES}
+        lines = []
+
+        for document in documents:
+            counts[document.status] = counts.get(document.status, 0) + 1
+            label = document.title or document.source_url or f'Document {document.pk}'
+            lines.append(f'- {label}: {document.get_status_display()}')
+
+        counts_summary = ', '.join(
+            f'{counts[value]} {label.lower()}'
+            for value, label in DocumentStatus.CHOICES
+            if counts[value]
+        )
+
+        return (
+            f'Counts -- {counts_summary or "none"}.\n\n'
+            'Documents:\n' + '\n'.join(lines)
+        )
+
+    return list_document_process
