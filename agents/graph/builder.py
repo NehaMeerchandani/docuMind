@@ -177,19 +177,34 @@ class WorkflowGraphBuilder:
         llm = get_chat_model(streaming=True, temperature=config.get('temperature', 0.7))
         llm_with_tools = llm.bind_tools(tools) if has_tools else llm
 
-        async def call_agent(state):
+        async def call_agent(state, config):
             messages = state['messages']
             if not messages or messages[0].type != 'system':
                 messages = [SystemMessage(content=system_prompt), *messages]
-            response = await llm_with_tools.ainvoke(messages)
-            return {'messages': [response]}
+            # Deliberately astream (not ainvoke), and pass this node's `config` through
+            # to it -- that's what carries LangGraph's callback manager down into the
+            # model call, which is what actually makes each individual token surface as
+            # its own AIMessageChunk on the graph's stream_mode="messages" channel
+            # (ChatService.stream_reply relies on exactly that to forward live deltas to
+            # the client). Without forwarding config, LangGraph only ever sees this
+            # node's single final return value, no matter how the model is called
+            # internally.
+            full_response = None
+            async for chunk in llm_with_tools.astream(messages, config):
+                full_response = chunk if full_response is None else full_response + chunk
+            return {'messages': [full_response]}
 
         call_tools = None
         if has_tools:
             tool_node = ToolNode(tools)
 
-            async def call_tools(state):
-                result = await tool_node.ainvoke(state)
+            async def call_tools(state, config):
+                # Forwarding `config` is required here too, for the same reason as
+                # call_agent above -- ToolNode internally needs the active Runtime
+                # (threaded through via config) to execute tools at all; without it,
+                # invoking any tool raises "Missing required config key 'N/A' for
+                # 'tools'" the moment the model actually calls one.
+                result = await tool_node.ainvoke(state, config)
                 new_messages = result.get('messages', [])
                 called_names = [message.name for message in new_messages if isinstance(message, ToolMessage)]
 
