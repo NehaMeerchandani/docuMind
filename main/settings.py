@@ -107,6 +107,11 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATICFILES_DIRS = [BASE_DIR / 'static']
 
+# Chat file attachments (e.g. CSV/Excel uploads for chart generation) are saved here.
+# Not served back to the browser -- parsed server-side only -- so no MEDIA_URL/serving
+# config is needed, just a filesystem destination for default_storage.save().
+MEDIA_ROOT = BASE_DIR / 'media'
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 

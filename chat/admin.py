@@ -3,6 +3,7 @@ import json
 from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.contrib import admin
+from django.core.files.storage import default_storage
 from django.http import JsonResponse, StreamingHttpResponse
 from django.shortcuts import render
 from django.urls import path
@@ -13,6 +14,7 @@ from base.active_company import get_active_company
 from base.admin import AuditableAdminMixin
 from chat.models import Conversation, Message
 from chat.services.chat_service import ChatService
+from chat.services.table_parser_service import TableParseError, TableParserService
 
 
 class MessageInline(TabularInline):
@@ -70,15 +72,41 @@ class AdminChatStreamView(View):
         if not user.is_authenticated or not user.is_staff:
             return JsonResponse({'success': False, 'error': 'Staff login required.', 'data': None}, status=403)
 
-        body = json.loads(request.body or b'{}')
-        question = body.get('question')
-        session_id = body.get('session_id')
+        # A file-attach turn arrives as multipart/form-data (question/session_id as
+        # regular form fields, plus a `file` part) instead of the original
+        # application/json body -- request.FILES is only ever populated for the
+        # former, so that's what decides which body we parse. The plain-JSON path is
+        # completely unchanged for every message that doesn't attach a file.
+        uploaded_file = request.FILES.get('file')
+        if uploaded_file is not None:
+            question = request.POST.get('question')
+            session_id = request.POST.get('session_id') or None
+        else:
+            body = json.loads(request.body or b'{}')
+            question = body.get('question')
+            session_id = body.get('session_id')
 
         if not question:
             return JsonResponse(
                 {'success': False, 'error': 'question is required.', 'data': None},
                 status=400,
             )
+
+        attachment = None
+        if uploaded_file is not None:
+            try:
+                table = await sync_to_async(TableParserService.parse)(uploaded_file, uploaded_file.name)
+            except TableParseError as exc:
+                return JsonResponse({'success': False, 'error': str(exc), 'data': None}, status=400)
+            attachment = {'filename': uploaded_file.name, 'table': table}
+            # Kept on disk per the user's explicit choice -- never re-read afterward
+            # (the parsed table above is what the rest of this turn/conversation uses),
+            # just persisted as a record of what was uploaded. TableParserService.parse
+            # already consumed this file object via .read(), leaving its cursor at EOF,
+            # so it must be seeked back to the start before default_storage can save
+            # its actual bytes again -- otherwise this would silently write an empty file.
+            uploaded_file.seek(0)
+            await sync_to_async(default_storage.save)(f'chat_uploads/{uploaded_file.name}', uploaded_file)
 
         company = await sync_to_async(get_active_company)(request)
         if company is None:
@@ -96,7 +124,7 @@ class AdminChatStreamView(View):
             conversation = await Conversation.objects.acreate(company=company, user=user, created_by=user)
 
         response = StreamingHttpResponse(
-            ChatService.stream_reply(conversation, company, question),
+            ChatService.stream_reply(conversation, company, question, attachment=attachment),
             content_type='text/event-stream',
         )
         response['Cache-Control'] = 'no-cache'

@@ -1,7 +1,7 @@
 import json
 
 from asgiref.sync import sync_to_async
-from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 
 from agents.graph.builder import WorkflowGraphBuilder
 from agents.services.router_service import RouterService
@@ -15,6 +15,16 @@ NO_AGENT_AVAILABLE_MESSAGE = (
     'No agent is configured yet. Create at least one in the Agents section of the admin.'
 )
 
+# Marks a persisted CONTEXT Message's payload as chart data (an attached file's table,
+# or data pasted into the chat), as opposed to any other future use of CONTEXT rows.
+# _persist_attachment_context below writes this exact shape, and
+# chat.services.tools._get_latest_attachment_table and PromptService.build_history
+# read it back:
+# {"kind": "attachment_table", "filename": ..., "table": {"columns": [...], "rows": [...]}}.
+# (tools._save_inline_table writes the same shape for pasted data, using the literal
+# string below rather than importing this constant.)
+ATTACHMENT_CONTEXT_KIND = 'attachment_table'
+
 # If the user's question contains this phrase (case-insensitive), the agent is given
 # only the conversation's stored summary as context, instead of recent message history.
 # The two are never combined -- see ChatService.stream_reply.
@@ -24,7 +34,15 @@ USE_SUMMARY_PHRASE = 'use summary'
 class ChatService:
 
     @classmethod
-    async def stream_reply(cls, conversation, company, question):
+    async def stream_reply(cls, conversation, company, question, attachment=None):
+        """`attachment`, if given, is {"filename": str, "table": {"columns": [...], "rows": [...]}}
+        for a file just uploaded alongside this turn's question (see
+        AdminChatStreamView.post, which parses it via TableParserService before calling
+        this). It is persisted as a CONTEXT message BEFORE the graph runs (not after),
+        specifically so build_chart_from_file (chat/services/tools.py) can read it back
+        within this very same turn -- a file attached and asked about in one message
+        must not require a second round-trip to "see" it.
+        """
         if USE_SUMMARY_PHRASE in question.lower():
             history = await sync_to_async(PromptService.build_summary_context)(conversation)
         else:
@@ -38,6 +56,10 @@ class ChatService:
             message=question,
             created_by_id=conversation.user_id,
         )
+
+        turn_hint = None
+        if attachment:
+            turn_hint = await sync_to_async(cls._persist_attachment_context)(company, conversation, attachment)
 
         if not conversation.title:
             conversation.title = question[:60]
@@ -61,7 +83,22 @@ class ChatService:
         graph = await sync_to_async(WorkflowGraphBuilder.build)(chosen_agent, company.id, conversation)
         langfuse_handler = get_langfuse_handler()
 
-        agent_input = {'messages': [*history, HumanMessage(content=question)], 'step_tool_calls': {}}
+        turn_messages = list(history)
+        if turn_hint:
+            # The hint goes after the history rather than before it, because the
+            # per-step agent node (agents/graph/builder.py, call_agent) only adds the
+            # step's own Langfuse system prompt when messages[0] is not already a system
+            # message.
+            #
+            # KNOWN LIMITATION: that only holds when there is history. On the very first
+            # message of a new conversation, history is empty, so this hint becomes
+            # messages[0] and the Langfuse prompt is skipped for that one turn. Charting
+            # still works (the hint itself tells the model to call the chart tool), and
+            # every later turn is unaffected.
+            turn_messages.append(SystemMessage(content=turn_hint))
+        turn_messages.append(HumanMessage(content=question))
+
+        agent_input = {'messages': turn_messages, 'step_tool_calls': {}}
         run_config = {
             'callbacks': [langfuse_handler],
             'metadata': {
@@ -82,7 +119,26 @@ class ChatService:
                 stream_mode=['messages', 'updates'],
             ):
                 if stream_mode == 'updates':
-                    for tool_name, result_preview in cls._tool_end_results(payload):
+                    for tool_name, raw_content in cls._tool_end_results(payload):
+                        chart_payload = cls._as_chart_payload(raw_content)
+
+                        if chart_payload is not None:
+                            # Full structured chart data, not the usual 200-char text
+                            # preview -- a chart only renders correctly client-side with
+                            # all of its labels/datasets intact, not a truncated string.
+                            await Message.objects.acreate(
+                                company=company,
+                                conversation=conversation,
+                                role=MessageRole.ASSISTANT,
+                                message_type=MessageType.MEDIA,
+                                tool_name=tool_name,
+                                message=json.dumps(chart_payload),
+                            )
+                            yield f'data: {json.dumps({"widget": {"type": "chart", "data": chart_payload["chart"]}})}\n\n'
+                            any_tool_used = True
+                            continue
+
+                        result_preview = raw_content[:TOOL_RESULT_PREVIEW_LENGTH]
                         await Message.objects.acreate(
                             company=company,
                             conversation=conversation,
@@ -146,6 +202,55 @@ class ChatService:
         yield 'data: [DONE]\n\n'
 
     @classmethod
+    def _persist_attachment_context(cls, company, conversation, attachment):
+        """Persists a just-uploaded file's parsed table as a CONTEXT Message, so it
+        durably survives in this conversation's history (not a cache, per the user's
+        explicit choice) -- reopening this chat tomorrow and asking "chart that again
+        as a line graph" must still work without re-uploading.
+
+        Row count is capped at MAX_ROWS_IN_CONTEXT here (not at parse time -- see
+        TableParserService.MAX_ROWS_PARSED, a separate, much larger safety cap) to keep
+        what gets resent into the LLM's context on every later turn in this
+        conversation (PromptService.build_history) bounded, independent of how many
+        rows the file actually had.
+
+        Returns a short string to use as this turn's own system hint (steering tool
+        selection toward build_chart_from_file when appropriate) -- kept separate from
+        what gets persisted, since the persisted CONTEXT row is replayed verbatim on
+        every later turn, while this hint is relevant only to the turn the file was
+        just attached on.
+        """
+        from chat.services.chart_service import MAX_ROWS_IN_CONTEXT
+
+        table = attachment['table']
+        filename = attachment['filename']
+        capped_rows = table['rows'][:MAX_ROWS_IN_CONTEXT]
+        was_capped = len(table['rows']) > MAX_ROWS_IN_CONTEXT
+
+        payload = {
+            'kind': ATTACHMENT_CONTEXT_KIND,
+            'filename': filename,
+            'table': {'columns': table['columns'], 'rows': capped_rows},
+            'row_count': len(table['rows']),
+        }
+
+        Message.objects.create(
+            company=company,
+            conversation=conversation,
+            role=MessageRole.ASSISTANT,
+            message_type=MessageType.CONTEXT,
+            message=json.dumps(payload),
+        )
+
+        row_note = f'{len(table["rows"])} rows' + (f' (showing first {MAX_ROWS_IN_CONTEXT})' if was_capped else '')
+        return (
+            f'The user just attached a file "{filename}" with columns '
+            f'{table["columns"]} and {row_note}. If the user wants a chart, graph, '
+            'plot, or visualization of this data, call build_chart_from_file -- pass a '
+            'chart_type only if they explicitly named one (bar/line/pie/scatter).'
+        )
+
+    @classmethod
     def _tool_start_events(cls, message_chunk, started_tool_call_ids):
         """Emit a `tool_start` event the moment the model picks a tool to call.
 
@@ -167,8 +272,11 @@ class ChatService:
 
     @classmethod
     def _tool_end_results(cls, updates_payload):
-        """Yield (tool_name, result_preview) once any step's tools node finishes and its
-        ToolMessage lands.
+        """Yield (tool_name, raw_content) once any step's tools node finishes and its
+        ToolMessage lands. `raw_content` is the tool's full, untruncated string result --
+        truncation to TOOL_RESULT_PREVIEW_LENGTH happens in the caller (stream_reply),
+        conditionally, since a chart payload must not be truncated at all while every
+        other tool's result still should be.
 
         `updates_payload` is the dict LangGraph's `stream_mode="updates"` yields for this
         step: `{node_name: {"messages": [...]}}`. Every step's tool-executing node is
@@ -184,6 +292,21 @@ class ChatService:
                     continue
 
                 content = message.content if isinstance(message.content, str) else str(message.content)
-                preview = content[:TOOL_RESULT_PREVIEW_LENGTH]
 
-                yield message.name, preview
+                yield message.name, content
+
+    @staticmethod
+    def _as_chart_payload(raw_content):
+        """Returns the parsed {"chart": {...}} dict if `raw_content` is build_chart_from_
+        file's JSON output, else None for every other tool's plain-text result. A
+        plain `json.loads` that happens to succeed on some unrelated tool's text is not
+        enough -- it must also have the "chart" key, which no other tool's output does.
+        """
+        try:
+            parsed = json.loads(raw_content)
+        except (TypeError, ValueError):
+            return None
+
+        if isinstance(parsed, dict) and 'chart' in parsed:
+            return parsed
+        return None

@@ -154,12 +154,49 @@
     .chat-notification-bubble .chat-bubble-label {
       color: #059669;
     }
-    .chat-form {
-      display: flex;
-      gap: 8px;
-      padding: 12px;
+    /* ---- File attachment: the chip above the input and the paperclip button ---- */
+    .chat-form-area {
       border-top: 1px solid #e5e7eb;
     }
+    .chat-attachment-chip {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      margin: 10px 12px 0;
+      padding: 6px 10px;
+      border-radius: 6px;
+      background: #ede9fe;
+      color: #5b21b6;
+      font-size: 12px;
+      width: fit-content;
+    }
+    .chat-attachment-chip.visible { display: flex; }
+    .chat-attachment-chip-remove {
+      cursor: pointer;
+      font-weight: 700;
+      padding: 0 2px;
+    }
+    .chat-form {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px;
+    }
+    .chat-attach-btn {
+      background: none;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      width: 34px;
+      height: 34px;
+      flex: 0 0 34px;
+      font-size: 16px;
+      cursor: pointer;
+      color: #6b7280;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .chat-attach-btn:hover { background: #f3f4f6; }
     #chat-input {
       flex: 1;
       padding: 8px 12px;
@@ -180,6 +217,62 @@
       cursor: pointer;
     }
     .chat-send-btn:hover { background: rgb(126 34 206); }
+    /* ---- Chart card shown inside an assistant message (built in chat.js,
+       renderChartWidget). The canvas box has a fixed height because the chart is
+       configured with maintainAspectRatio: false. ---- */
+    .chat-widget-chart {
+      margin-top: 8px;
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 14px 16px 16px;
+      width: 100%;
+      max-width: 560px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+    }
+    .chat-widget-chart-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .chat-widget-chart-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #111827;
+    }
+    .chat-widget-chart-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .chat-chart-toggle-btn {
+      background: #f3f4f6;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #6b7280;
+      cursor: pointer;
+    }
+    .chat-chart-toggle-btn:hover { background: #e5e7eb; }
+    .chat-chart-toggle-btn.active {
+      background: rgb(147 51 234);
+      color: #fff;
+    }
+    .chat-widget-chart-canvas-box {
+      position: relative;
+      height: 260px;
+      width: 100%;
+    }
+    .chat-widget-chart-note {
+      font-size: 11px;
+      color: #9ca3af;
+      margin-top: 8px;
+    }
 
     html.dark .chat-sidebar,
     html.dark .chat-main {
@@ -222,7 +315,29 @@
     html.dark .chat-notification-bubble .chat-bubble-label {
       color: #6ee7b7;
     }
+    html.dark .chat-attach-btn {
+      border-color: #374151;
+      color: #9ca3af;
+    }
+    html.dark .chat-attach-btn:hover { background: #1f2937; }
+    html.dark .chat-attachment-chip {
+      background: #312e81;
+      color: #c7d2fe;
+    }
+    html.dark .chat-widget-chart {
+      background: #1f2937;
+      border-color: #374151;
+    }
+    html.dark .chat-widget-chart-title { color: #f3f4f6; }
+    html.dark .chat-chart-toggle-btn {
+      background: #111827;
+      color: #9ca3af;
+    }
+    html.dark .chat-chart-toggle-btn:hover { background: #374151; }
+    html.dark .chat-widget-chart-note { color: #6b7280; }
+    html.dark .chat-form-area { border-color: #374151; }
   </style>
+  <script src="{% static 'admin/js/vendor/chart.umd.js' %}"></script>
   <script src="{% static 'admin/js/chat.js' %}" defer></script>
 {% endblock %}
 
@@ -258,15 +373,27 @@
 
       <div id="chat-messages" class="chat-messages"></div>
 
-      <form id="chat-form" class="chat-form">
-        <input
-          type="text"
-          id="chat-input"
-          autocomplete="off"
-          placeholder="Ask a question about this company's documents..."
-        >
-        <button type="submit" class="chat-send-btn">Send</button>
-      </form>
+      <div class="chat-form-area">
+        {# Shows the picked file's name until it is sent or removed (see chat.js, setPendingFile). #}
+        <div id="chat-attachment-chip" class="chat-attachment-chip">
+          <span>📎</span>
+          <span id="chat-attachment-name"></span>
+          <span id="chat-attachment-remove" class="chat-attachment-chip-remove" title="Remove attachment">×</span>
+        </div>
+
+        <form id="chat-form" class="chat-form">
+          {# Hidden; the paperclip button below opens it. Formats match TableParserService. #}
+          <input type="file" id="chat-file-input" accept=".csv,.xlsx,.xls,.txt" hidden>
+          <button type="button" id="chat-attach-btn" class="chat-attach-btn" title="Attach a CSV or Excel file">📎</button>
+          <input
+            type="text"
+            id="chat-input"
+            autocomplete="off"
+            placeholder="Ask a question about this company's documents..."
+          >
+          <button type="submit" class="chat-send-btn">Send</button>
+        </form>
+      </div>
     </main>
   </div>
 {% endblock %}

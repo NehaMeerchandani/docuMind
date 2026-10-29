@@ -1,6 +1,7 @@
+import json
 import os
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langfuse import Langfuse
 
 from chat.models import MessageRole, MessageType
@@ -68,12 +69,16 @@ class PromptService:
     @classmethod
     def build_history(cls, conversation):
         """Turn this conversation's last HISTORY_MESSAGE_LIMIT TEXT messages into LangChain
-        message objects.
+        message objects, with the conversation's most recently attached file's table (if
+        any) prepended as a SystemMessage.
 
-        Only MessageType.TEXT rows are replayed into the agent's memory. ERROR rows are
-        deliberately excluded (we don't want a past failure re-entering the model's context),
-        and there's no CONTEXT/SYSTEM row type produced by the agent flow (tool results live
-        inside the LangGraph run itself, not as persisted Message rows).
+        Only MessageType.TEXT rows are replayed as the actual back-and-forth. ERROR rows
+        are deliberately excluded (we don't want a past failure re-entering the model's
+        context). CONTEXT rows (currently only ever a chat file attachment's parsed table
+        -- see ChatService._persist_attachment_context) are NOT part of that back-and-forth,
+        but the latest one is still surfaced here as a leading SystemMessage, so that a
+        later turn in the same session (e.g. "now chart that as a pie instead") still has
+        the table available without the user re-attaching the file.
 
         Capped to the most recent messages rather than the full conversation, to keep the
         prompt small -- for anything older, the user is expected to say "use summary"
@@ -84,12 +89,58 @@ class PromptService:
         ).order_by('-created_at')[:cls.HISTORY_MESSAGE_LIMIT])
         history = list(reversed(recent_first))
 
-        return [
+        messages = [
             HumanMessage(content=message.message)
             if message.role == MessageRole.USER
             else AIMessage(content=message.message)
             for message in history
         ]
+
+        # Appended at the END of history, deliberately NOT at index 0 -- the per-step
+        # agent node (agents/graph/builder.py's call_agent) only injects that step's
+        # OWN Langfuse-managed system prompt when `messages[0]` isn't already a system
+        # message. A reminder placed at index 0 here would silently suppress the real
+        # system prompt on every single turn of any conversation that ever had a file
+        # attached, which would be a much worse bug than the one this is meant to fix.
+        attachment_reminder = cls._build_attachment_reminder(conversation)
+        if attachment_reminder:
+            messages.append(attachment_reminder)
+
+        return messages
+
+    @classmethod
+    def _build_attachment_reminder(cls, conversation):
+        """Returns a SystemMessage summarizing the latest attached file's table (not its
+        full row data a second time -- that already lives in the persisted CONTEXT row,
+        which build_chart_from_file reads directly), or None if no file has been attached
+        in this conversation. Just enough so the model knows a file exists and can decide
+        to call build_chart_from_file again on a follow-up turn.
+        """
+        context_message = (
+            conversation.messages.filter(message_type=MessageType.CONTEXT)
+            .order_by('-created_at')
+            .first()
+        )
+        if context_message is None or not context_message.message:
+            return None
+
+        try:
+            payload = json.loads(context_message.message)
+        except (TypeError, ValueError):
+            return None
+
+        if not isinstance(payload, dict) or payload.get('kind') != 'attachment_table':
+            return None
+
+        table = payload.get('table') or {}
+        columns = table.get('columns') or []
+        row_count = payload.get('row_count', len(table.get('rows') or []))
+
+        return SystemMessage(content=(
+            f'Earlier in this conversation, the user attached a file "{payload.get("filename", "")}" '
+            f'with columns {columns} and {row_count} rows. If they now ask for a chart, graph, '
+            'plot, or visualization (even without re-attaching the file), call build_chart_from_file.'
+        ))
 
     @classmethod
     def build_summary_context(cls, conversation):

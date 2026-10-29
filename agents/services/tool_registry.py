@@ -1,4 +1,5 @@
 from chat.services.tools import (
+    make_build_chart_from_file_tool,
     make_list_document_process_tool,
     make_search_documents_tool,
     make_summarize_session_tool,
@@ -36,6 +37,13 @@ class ToolRegistry:
         'list_document_process': {
             'label': 'List document processing status',
             'build': lambda company_id, conversation: make_list_document_process_tool(company_id),
+        },
+        # Charts tabular data from an attached CSV/Excel file or from data pasted into
+        # the message. Like summarize_session it needs the conversation (to find the
+        # attached table), not the company id.
+        'build_chart_from_file': {
+            'label': 'Build a chart/graph from an attached file',
+            'build': lambda company_id, conversation: make_build_chart_from_file_tool(conversation),
         },
     }
 
