@@ -1,6 +1,10 @@
+import io
+import os
+
 import fitz
 import requests
 from bs4 import BeautifulSoup
+from docx import Document as DocxDocument
 
 from document.models import DocumentType
 
@@ -33,6 +37,22 @@ class ParserService:
         return DocumentType.TEXT, content.decode('utf-8', errors='ignore')
 
     @classmethod
+    def parse_file(cls, filename, content):
+        """Parse an uploaded file's bytes, choosing the parser by extension."""
+        if len(content) > cls.MAX_CONTENT_BYTES:
+            raise ValueError('Document is too large to process.')
+
+        extension = os.path.splitext(filename)[1].lower()
+
+        if extension == '.pdf':
+            return DocumentType.PDF, cls._parse_pdf(content)
+        if extension == '.docx':
+            return DocumentType.DOCX, cls._parse_docx(content)
+        if extension in ('.txt', '.md'):
+            return DocumentType.TEXT, content.decode('utf-8', errors='ignore')
+        raise ValueError(f'Unsupported file type "{extension}". Supported: PDF, DOCX, TXT, MD.')
+
+    @classmethod
     def _read_capped(cls, response):
         chunks = []
         total_bytes = 0
@@ -56,3 +76,12 @@ class ParserService:
     def _parse_pdf(content):
         with fitz.open(stream=content, filetype='pdf') as pdf:
             return '\n'.join(page.get_text() for page in pdf)
+
+    @staticmethod
+    def _parse_docx(content):
+        document = DocxDocument(io.BytesIO(content))
+        lines = [paragraph.text for paragraph in document.paragraphs]
+        for table in document.tables:
+            for row in table.rows:
+                lines.append(' | '.join(cell.text for cell in row.cells))
+        return '\n'.join(line for line in lines if line.strip())

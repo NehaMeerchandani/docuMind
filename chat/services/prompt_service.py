@@ -129,6 +129,13 @@ class PromptService:
         except (TypeError, ValueError):
             return None
 
+        if isinstance(payload, dict) and payload.get('kind') == 'attachment_file':
+            return SystemMessage(content=(
+                f'Earlier in this conversation, the user attached a file '
+                f'"{payload.get("filename", "")}" (stored_path="{payload.get("stored_path", "")}"). '
+                'If they now ask to summarize it, chart it (CSV/Excel only) or process it, use that file.'
+            ))
+
         if not isinstance(payload, dict) or payload.get('kind') != 'attachment_table':
             return None
 

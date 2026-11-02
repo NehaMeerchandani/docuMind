@@ -65,6 +65,13 @@
   background: rgb(29 78 216);
 }
 
+.doc-process-btn--temporal {
+  background: rgb(234 88 12);
+}
+.doc-process-btn--temporal:hover:not(:disabled) {
+  background: rgb(194 65 12);
+}
+
 .doc-process-toast {
   position: fixed;
   bottom: 20px;

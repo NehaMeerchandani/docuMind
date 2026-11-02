@@ -1,7 +1,13 @@
+from chat.services.document_process_tools import (
+    make_control_document_processing_tool,
+    make_get_document_status_tool,
+    make_process_document_tool,
+)
 from chat.services.tools import (
     make_build_chart_from_file_tool,
     make_list_document_process_tool,
     make_search_documents_tool,
+    make_summarize_document_tool,
     make_summarize_session_tool,
 )
 
@@ -33,6 +39,26 @@ class ToolRegistry:
         'summarize_session': {
             'label': 'Summarize this conversation',
             'build': lambda company_id, conversation: make_summarize_session_tool(conversation),
+        },
+        # Summarizes an attached PDF/DOCX/TXT/MD directly with the LLM (no table parser,
+        # no Document row, no embedding). Needs the conversation to find the attachment.
+        'summarize_document': {
+            'label': 'Summarize an attached document',
+            'build': lambda company_id, conversation: make_summarize_document_tool(conversation),
+        },
+        # Temporal-backed document processing. process/control need the conversation (the
+        # user, the session id, attached files); status only needs the company.
+        'process_document': {
+            'label': 'Process a document (Temporal)',
+            'build': lambda company_id, conversation: make_process_document_tool(company_id, conversation),
+        },
+        'get_document_status': {
+            'label': 'Get a document\'s processing status',
+            'build': lambda company_id, conversation: make_get_document_status_tool(company_id),
+        },
+        'control_document_processing': {
+            'label': 'Pause / resume / cancel document processing',
+            'build': lambda company_id, conversation: make_control_document_processing_tool(company_id, conversation),
         },
         'list_document_process': {
             'label': 'List document processing status',

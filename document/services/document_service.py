@@ -8,54 +8,127 @@ from document.services.embedding_service import EmbeddingService
 from document.services.parser_service import ParserService
 
 
+class ProcessingStep:
+    """Values of Document.processing_step: where inside status=PROCESSING a document is."""
+    PARSING = 'parsing'
+    CHUNKING = 'chunking'
+    EMBEDDING = 'embedding'
+    DONE = 'done'
+
+
 class DocumentService:
+    """Document processing, split into small steps.
+
+    `process()` runs them one after another in-process (what the admin button, the REST
+    API, Celery and Kafka call). The Temporal activities (document/temporal/activities.py)
+    call the very same step functions, one per activity, so there is one implementation
+    of each step and only the orchestration differs.
+    """
+
     @classmethod
     def process(cls, document, user=None):
         if document.status == DocumentStatus.COMPLETED:
             raise ValueError('This document has already been processed.')
 
-        document.chunks.all().delete()
-
-        document.status = DocumentStatus.PROCESSING
-        if user is not None:
-            document.updated_by = user
-        document.save(update_fields=['status', 'updated_by'] if user is not None else ['status'])
+        cls.mark_processing(document, user=user)
 
         try:
-            if document.source_url:
-                doc_type, text = ParserService.fetch_and_parse(document.source_url)
-            else:
-                doc_type, text = DocumentType.TEXT, document.content
-
-            chunks_text = ChunkingService.split_text(text)
-
-            if not chunks_text:
-                raise ValueError('No extractable text content was found at this URL.')
-
-            for index, chunk_text in enumerate(chunks_text):
-                chunk = Chunk.objects.create(
-                    company=document.company,
-                    document=document,
-                    content=chunk_text,
-                    chunk_index=index,
-                    created_by=document.created_by,
-                )
-                EmbeddingService.upsert_chunk(chunk)
-
-            document.doc_type = doc_type
-            document.status = DocumentStatus.COMPLETED
-            document.error_message = ''
-            document.save(update_fields=['doc_type', 'status', 'error_message'])
-
+            doc_type, text = cls.parse(document)
+            chunk_ids = cls.create_chunks(document, text)
+            cls.embed_chunks(chunk_ids)
         except Exception as exc:
-            document.status = DocumentStatus.FAILED
-            document.error_message = str(exc)
-            document.save(update_fields=['status', 'error_message'])
-            cls._notify_uploader(document)
+            cls.mark_failed(document, str(exc))
             raise
 
+        return cls.mark_completed(document, doc_type)
+
+    @classmethod
+    def mark_processing(cls, document, user=None):
+        document.status = DocumentStatus.PROCESSING
+        document.processing_step = ProcessingStep.PARSING
+        update_fields = ['status', 'processing_step']
+        if user is not None:
+            document.updated_by = user
+            update_fields.append('updated_by')
+        document.save(update_fields=update_fields)
+
+    @classmethod
+    def set_step(cls, document, step):
+        document.processing_step = step
+        document.save(update_fields=['processing_step'])
+
+    @classmethod
+    def parse(cls, document):
+        """Returns (doc_type, text) from the document's uploaded file, URL or pasted text."""
+        cls.set_step(document, ProcessingStep.PARSING)
+
+        if document.file:
+            with document.file.open('rb') as stored_file:
+                content = stored_file.read()
+            return ParserService.parse_file(document.file.name, content)
+        if document.source_url:
+            return ParserService.fetch_and_parse(document.source_url)
+        return DocumentType.TEXT, document.content
+
+    @classmethod
+    def create_chunks(cls, document, text):
+        """Splits `text` into Chunk rows and returns their ids (not yet embedded).
+
+        Deletes the document's existing chunks first, so re-running this step (a retry,
+        or a re-process) never leaves duplicates behind.
+        """
+        cls.set_step(document, ProcessingStep.CHUNKING)
+        document.chunks.all().delete()
+
+        chunks_text = ChunkingService.split_text(text)
+        if not chunks_text:
+            raise ValueError('No extractable text content was found at this URL.')
+
+        chunks = [
+            Chunk.objects.create(
+                company=document.company,
+                document=document,
+                content=chunk_text,
+                chunk_index=index,
+                created_by=document.created_by,
+            )
+            for index, chunk_text in enumerate(chunks_text)
+        ]
+        return [chunk.id for chunk in chunks]
+
+    @classmethod
+    def embed_chunks(cls, chunk_ids, on_chunk_embedded=None):
+        """Embeds the given chunks into Qdrant, in order. Safe to repeat: a chunk's
+        point id is its own id, so embedding it again overwrites rather than duplicates.
+
+        `on_chunk_embedded(done, total)`, if given, is called after each chunk (the
+        Temporal activity uses it to heartbeat).
+        """
+        chunks = list(Chunk.objects.filter(id__in=chunk_ids).order_by('chunk_index'))
+        if chunks:
+            cls.set_step(chunks[0].document, ProcessingStep.EMBEDDING)
+
+        for done, chunk in enumerate(chunks, start=1):
+            EmbeddingService.upsert_chunk(chunk)
+            if on_chunk_embedded is not None:
+                on_chunk_embedded(done, len(chunks))
+
+    @classmethod
+    def mark_completed(cls, document, doc_type):
+        document.doc_type = doc_type
+        document.status = DocumentStatus.COMPLETED
+        document.processing_step = ProcessingStep.DONE
+        document.error_message = ''
+        document.save(update_fields=['doc_type', 'status', 'processing_step', 'error_message'])
         cls._notify_uploader(document)
         return document
+
+    @classmethod
+    def mark_failed(cls, document, error_message):
+        document.status = DocumentStatus.FAILED
+        document.error_message = error_message
+        document.save(update_fields=['status', 'error_message'])
+        cls._notify_uploader(document)
 
     @classmethod
     def _notify_uploader(cls, document):

@@ -42,6 +42,29 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
+  // Renders **bold** segments as <strong> without innerHTML (text stays escaped).
+  // The raw text is kept on the element so streamed chunks can be appended and
+  // re-rendered, even when a "**" pair is split across chunks.
+  function setRichText(el, text) {
+    el._raw = text;
+    el.textContent = '';
+    const parts = text.split(/\*\*([^*]+?)\*\*/g);
+    parts.forEach(function (part, i) {
+      if (!part) return;
+      if (i % 2 === 1) {
+        const strong = document.createElement('strong');
+        strong.textContent = part;
+        el.appendChild(strong);
+      } else {
+        el.appendChild(document.createTextNode(part));
+      }
+    });
+  }
+
+  function appendRichText(el, chunk) {
+    setRichText(el, (el._raw || '') + chunk);
+  }
+
   function clearMessages() {
     messagesEl.innerHTML = '';
   }
@@ -55,7 +78,11 @@ document.addEventListener('DOMContentLoaded', function () {
     label.textContent = role === 'user' ? 'You' : 'Assistant';
 
     const textEl = document.createElement('span');
-    textEl.textContent = text;
+    if (role === 'user') {
+      textEl.textContent = text;
+    } else {
+      setRichText(textEl, text);
+    }
 
     div.appendChild(label);
     div.appendChild(textEl);
@@ -434,10 +461,10 @@ document.addEventListener('DOMContentLoaded', function () {
             renderChartWidget(assistant.wrapper, parsed.widget.data);
           }
         } else if (parsed.content) {
-          assistant.textEl.textContent += parsed.content;
+          appendRichText(assistant.textEl, parsed.content);
           messagesEl.scrollTop = messagesEl.scrollHeight;
         } else if (parsed.error) {
-          assistant.textEl.textContent += '\n[Error: ' + parsed.error + ']';
+          appendRichText(assistant.textEl, '\n[Error: ' + parsed.error + ']');
         } else if (parsed.done) {
           activeStreamHandler = null;
           if (!anyToolUsed) {
@@ -542,10 +569,10 @@ document.addEventListener('DOMContentLoaded', function () {
             renderChartWidget(assistant.wrapper, parsed.widget.data);
           }
         } else if (parsed.content) {
-          assistant.textEl.textContent += parsed.content;
+          appendRichText(assistant.textEl, parsed.content);
           messagesEl.scrollTop = messagesEl.scrollHeight;
         } else if (parsed.error) {
-          assistant.textEl.textContent += '\n[Error: ' + parsed.error + ']';
+          appendRichText(assistant.textEl, '\n[Error: ' + parsed.error + ']');
         }
       }
     }
@@ -658,7 +685,7 @@ document.addEventListener('DOMContentLoaded', function () {
       });
       pendingMediaRows = [];
 
-      assistant.textEl.textContent = message.message;
+      setRichText(assistant.textEl, message.message);
     });
   }
 

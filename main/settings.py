@@ -168,6 +168,13 @@ CHANNEL_LAYERS = {
 CHAT_TRANSPORT = os.getenv('CHAT_TRANSPORT', 'sse')
 
 
+# --- Temporal (durable document-processing workflows) ---
+
+TEMPORAL_SERVER_URL = os.getenv('TEMPORAL_SERVER_URL', 'localhost:7233')
+TEMPORAL_NAMESPACE = os.getenv('TEMPORAL_NAMESPACE', 'default')
+TEMPORAL_TASK_QUEUE = os.getenv('TEMPORAL_TASK_QUEUE', 'document-processing')
+
+
 UNFOLD = {
     'SITE_TITLE': 'RAG Admin',
     'SITE_HEADER': 'RAG Admin',

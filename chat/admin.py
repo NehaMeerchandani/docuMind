@@ -1,4 +1,5 @@
 import json
+import os
 
 from asgiref.sync import sync_to_async
 from django.conf import settings
@@ -14,7 +15,9 @@ from base.active_company import get_active_company
 from base.admin import AuditableAdminMixin
 from chat.models import Conversation, Message
 from chat.services.chat_service import ChatService
-from chat.services.table_parser_service import TableParseError, TableParserService
+from document.services.parser_service import ParserService
+
+ALLOWED_UPLOAD_EXTENSIONS = {'.csv', '.xlsx', '.xls', '.pdf', '.docx', '.txt', '.md'}
 
 
 class MessageInline(TabularInline):
@@ -94,19 +97,33 @@ class AdminChatStreamView(View):
 
         attachment = None
         if uploaded_file is not None:
-            try:
-                table = await sync_to_async(TableParserService.parse)(uploaded_file, uploaded_file.name)
-            except TableParseError as exc:
-                return JsonResponse({'success': False, 'error': str(exc), 'data': None}, status=400)
-            attachment = {'filename': uploaded_file.name, 'table': table}
-            # Kept on disk per the user's explicit choice -- never re-read afterward
-            # (the parsed table above is what the rest of this turn/conversation uses),
-            # just persisted as a record of what was uploaded. TableParserService.parse
-            # already consumed this file object via .read(), leaving its cursor at EOF,
-            # so it must be seeked back to the start before default_storage can save
-            # its actual bytes again -- otherwise this would silently write an empty file.
-            uploaded_file.seek(0)
-            await sync_to_async(default_storage.save)(f'chat_uploads/{uploaded_file.name}', uploaded_file)
+            extension = os.path.splitext(uploaded_file.name)[1].lower()
+            if extension not in ALLOWED_UPLOAD_EXTENSIONS:
+                return JsonResponse(
+                    {
+                        'success': False,
+                        'error': f'Unsupported file type "{extension}". Allowed: '
+                                 f'{", ".join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}.',
+                        'data': None,
+                    },
+                    status=400,
+                )
+            if uploaded_file.size > ParserService.MAX_CONTENT_BYTES:
+                return JsonResponse(
+                    {'success': False, 'error': 'File is too large (max 20 MB).', 'data': None},
+                    status=400,
+                )
+
+            # Saved first, and the name storage RETURNS is what's kept: on a name clash
+            # it differs from the requested one (report_x7k2.pdf), and that final path is
+            # what later steps (summary, chart, Document.file) use to find the file.
+            stored_path = await sync_to_async(default_storage.save)(
+                f'chat_uploads/{uploaded_file.name}', uploaded_file,
+            )
+            attachment = {'filename': uploaded_file.name, 'stored_path': stored_path}
+
+            # Nothing is parsed at upload time. Summary, processing and charts each read
+            # the stored file only when the user actually asks for them.
 
         company = await sync_to_async(get_active_company)(request)
         if company is None:

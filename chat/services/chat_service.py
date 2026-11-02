@@ -1,4 +1,5 @@
 import json
+import os
 
 from asgiref.sync import sync_to_async
 from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
@@ -24,6 +25,9 @@ NO_AGENT_AVAILABLE_MESSAGE = (
 # (tools._save_inline_table writes the same shape for pasted data, using the literal
 # string below rather than importing this constant.)
 ATTACHMENT_CONTEXT_KIND = 'attachment_table'
+# Any uploaded file: only its stored path is remembered, not its text or rows.
+ATTACHMENT_FILE_CONTEXT_KIND = 'attachment_file'
+TABULAR_EXTENSIONS = {'.csv', '.xlsx', '.xls'}
 
 # If the user's question contains this phrase (case-insensitive), the agent is given
 # only the conversation's stored summary as context, instead of recent message history.
@@ -35,13 +39,12 @@ class ChatService:
 
     @classmethod
     async def stream_reply(cls, conversation, company, question, attachment=None):
-        """`attachment`, if given, is {"filename": str, "table": {"columns": [...], "rows": [...]}}
-        for a file just uploaded alongside this turn's question (see
-        AdminChatStreamView.post, which parses it via TableParserService before calling
-        this). It is persisted as a CONTEXT message BEFORE the graph runs (not after),
-        specifically so build_chart_from_file (chat/services/tools.py) can read it back
-        within this very same turn -- a file attached and asked about in one message
-        must not require a second round-trip to "see" it.
+        """`attachment`, if given, is {"filename": str, "stored_path": str} for a file just
+        uploaded alongside this turn's question (see AdminChatStreamView.post, which saves
+        it but does not parse it). Its path is persisted as a CONTEXT message BEFORE the
+        graph runs (not after), so the tools in chat/services/tools.py can find it within
+        this very same turn -- a file attached and asked about in one message must not
+        require a second round-trip to "see" it.
         """
         if USE_SUMMARY_PHRASE in question.lower():
             history = await sync_to_async(PromptService.build_summary_context)(conversation)
@@ -203,51 +206,48 @@ class ChatService:
 
     @classmethod
     def _persist_attachment_context(cls, company, conversation, attachment):
-        """Persists a just-uploaded file's parsed table as a CONTEXT Message, so it
-        durably survives in this conversation's history (not a cache, per the user's
-        explicit choice) -- reopening this chat tomorrow and asking "chart that again
-        as a line graph" must still work without re-uploading.
+        """Persists a just-uploaded file's stored path as a CONTEXT Message, so it durably
+        survives in this conversation's history (not a cache) -- reopening this chat
+        tomorrow and saying "summarize that file" or "chart that" must still work without
+        re-uploading. Only the path is kept, never the file's text or parsed rows: the
+        tools (summarize_document, build_chart_from_file, process_document) read the
+        stored file themselves, and only when the user actually asks for them.
 
-        Row count is capped at MAX_ROWS_IN_CONTEXT here (not at parse time -- see
-        TableParserService.MAX_ROWS_PARSED, a separate, much larger safety cap) to keep
-        what gets resent into the LLM's context on every later turn in this
-        conversation (PromptService.build_history) bounded, independent of how many
-        rows the file actually had.
+        Written BEFORE the graph runs (not after), so a tool called within this very same
+        turn can already find it.
 
-        Returns a short string to use as this turn's own system hint (steering tool
-        selection toward build_chart_from_file when appropriate) -- kept separate from
-        what gets persisted, since the persisted CONTEXT row is replayed verbatim on
-        every later turn, while this hint is relevant only to the turn the file was
-        just attached on.
+        Returns a short string to use as this turn's own system hint, kept separate from
+        what gets persisted since the persisted CONTEXT row is replayed on every later
+        turn (see PromptService._build_attachment_reminder), while this hint is relevant
+        only to the turn the file was just attached on.
         """
-        from chat.services.chart_service import MAX_ROWS_IN_CONTEXT
-
-        table = attachment['table']
         filename = attachment['filename']
-        capped_rows = table['rows'][:MAX_ROWS_IN_CONTEXT]
-        was_capped = len(table['rows']) > MAX_ROWS_IN_CONTEXT
-
-        payload = {
-            'kind': ATTACHMENT_CONTEXT_KIND,
-            'filename': filename,
-            'table': {'columns': table['columns'], 'rows': capped_rows},
-            'row_count': len(table['rows']),
-        }
+        stored_path = attachment['stored_path']
 
         Message.objects.create(
             company=company,
             conversation=conversation,
             role=MessageRole.ASSISTANT,
             message_type=MessageType.CONTEXT,
-            message=json.dumps(payload),
+            message=json.dumps({
+                'kind': ATTACHMENT_FILE_CONTEXT_KIND,
+                'filename': filename,
+                'stored_path': stored_path,
+            }),
         )
 
-        row_note = f'{len(table["rows"])} rows' + (f' (showing first {MAX_ROWS_IN_CONTEXT})' if was_capped else '')
+        is_tabular = os.path.splitext(filename)[1].lower() in TABULAR_EXTENSIONS
+        options = (
+            'summary (summarize_document), a chart (build_chart_from_file), or to have it processed '
+            '(indexed for search, so it can be asked about later)'
+            if is_tabular else
+            'summary (summarize_document), or to have it processed (indexed for search, so it can be '
+            'asked about later). A chart is not possible for this file type -- charts need CSV/Excel'
+        )
         return (
-            f'The user just attached a file "{filename}" with columns '
-            f'{table["columns"]} and {row_note}. If the user wants a chart, graph, '
-            'plot, or visualization of this data, call build_chart_from_file -- pass a '
-            'chart_type only if they explicitly named one (bar/line/pie/scatter).'
+            f'The user just attached a file "{filename}" (stored_path="{stored_path}"). If their '
+            f'message does not already say what they want, ask whether they want a {options}. '
+            'Do not guess.'
         )
 
     @classmethod
