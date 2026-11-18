@@ -1,6 +1,7 @@
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.runnables import RunnablePassthrough
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -79,19 +80,25 @@ class WorkflowGraphBuilder:
         for edge in edges:
             edges_by_source.setdefault(edge['source'], []).append(edge)
 
+        agent_names, tools_names = cls._assign_node_names(step_nodes)
+
         graph = StateGraph(WorkflowState)
 
         for step_id, step in step_nodes.items():
-            agent_node_name = cls._agent_node_name(step_id)
-            tools_node_name = cls._tools_node_name(step_id)
+            agent_node_name = agent_names[step_id]
+            tools_node_name = tools_names[step_id]
 
-            call_agent, call_tools, has_tools = cls._build_step_callables(
+            call_agent, call_tools, has_tools, prompt_metadata = cls._build_step_callables(
                 step, company_id, conversation,
             )
-            graph.add_node(agent_node_name, call_agent)
+            # `metadata` is attached to this node's span in Langfuse, which is how a trace
+            # shows which prompt (and version) a step used, or that it fell back.
+            graph.add_node(agent_node_name, call_agent, metadata=prompt_metadata)
 
             outgoing = edges_by_source.get(step_id, [])
-            router = cls._build_step_router(step_id, tools_node_name, outgoing, nodes_by_id, has_tools)
+            router = cls._build_step_router(
+                step_id, tools_node_name, outgoing, nodes_by_id, has_tools, agent_names,
+            )
             graph.add_conditional_edges(agent_node_name, router)
 
             if has_tools:
@@ -107,7 +114,7 @@ class WorkflowGraphBuilder:
         if first_step_id not in step_nodes:
             raise WorkflowValidationError('The start node must connect directly to a step node.')
 
-        graph.add_edge(START, cls._agent_node_name(first_step_id))
+        graph.add_edge(START, agent_names[first_step_id])
 
         return graph.compile()
 
@@ -154,12 +161,24 @@ class WorkflowGraphBuilder:
         return matches[0]
 
     @staticmethod
-    def _agent_node_name(step_id):
-        return f'{step_id}__agent'
+    def _assign_node_names(step_nodes):
+        """Graph node names for each step, built from the step's prompt slug (e.g.
+        'rag-system-prompt__agent') so a Langfuse trace and its Graph view read like the
+        workflow does in the editor, instead of showing opaque node ids. Two steps sharing
+        a slug get their node id appended so the names stay unique. The '__agent' and
+        '__tools' suffixes are relied on by ChatService to recognise a step's nodes."""
+        slug_counts = {}
+        for step in step_nodes.values():
+            slug = step['data']['name']
+            slug_counts[slug] = slug_counts.get(slug, 0) + 1
 
-    @staticmethod
-    def _tools_node_name(step_id):
-        return f'{step_id}__tools'
+        agent_names, tools_names = {}, {}
+        for step_id, step in step_nodes.items():
+            slug = step['data']['name']
+            base = slug if slug_counts[slug] == 1 else f'{slug}-{step_id}'
+            agent_names[step_id] = f'{base}__agent'
+            tools_names[step_id] = f'{base}__tools'
+        return agent_names, tools_names
 
     @classmethod
     def _build_step_callables(cls, step, company_id, conversation):
@@ -168,14 +187,34 @@ class WorkflowGraphBuilder:
         prompt_slug = data['name']
         tool_ids = data.get('tools') or []
 
-        system_prompt, config = PromptService.get_prompt_and_config(
+        prompt_client = PromptService.get_prompt_client(
             prompt_slug, fallback=_default_fallback_prompt(tool_ids),
         )
+        system_prompt = prompt_client.compile()
+        config = prompt_client.config or {}
+        prompt_is_fallback = bool(getattr(prompt_client, 'is_fallback', False))
+        prompt_metadata = {
+            'prompt_slug': prompt_slug,
+            'prompt_version': None if prompt_is_fallback else prompt_client.version,
+            'prompt_is_fallback': prompt_is_fallback,
+        }
+        if prompt_is_fallback:
+            prompt_metadata['prompt_warning'] = (
+                f"Prompt '{prompt_slug}' was not found in Langfuse; the built-in fallback "
+                'prompt was used.'
+            )
         tools = ToolRegistry.build_tools(tool_ids, company_id, conversation)
         has_tools = bool(tools)
 
         llm = get_chat_model(streaming=True, temperature=config.get('temperature', 0.7))
         llm_with_tools = llm.bind_tools(tools) if has_tools else llm
+        if not prompt_is_fallback:
+            # Langfuse links a generation to a prompt only when the prompt rides as
+            # `langfuse_prompt` metadata on a runnable directly in front of the LLM call
+            # (the same shape as `prompt | llm`). The pass-through does nothing but carry it.
+            llm_with_tools = RunnablePassthrough().with_config(
+                metadata={'langfuse_prompt': prompt_client},
+            ) | llm_with_tools
 
         async def call_agent(state, config):
             messages = state['messages']
@@ -213,14 +252,14 @@ class WorkflowGraphBuilder:
 
                 return {'messages': new_messages, 'step_tool_calls': step_tool_calls}
 
-        return call_agent, call_tools, has_tools
+        return call_agent, call_tools, has_tools, prompt_metadata
 
     @classmethod
-    def _build_step_router(cls, step_id, tools_node_name, outgoing_edges, nodes_by_id, has_tools):
+    def _build_step_router(cls, step_id, tools_node_name, outgoing_edges, nodes_by_id, has_tools, agent_names):
         def resolve_target(node_id):
             if nodes_by_id[node_id]['type'] == END_NODE_TYPE:
                 return END
-            return cls._agent_node_name(node_id)
+            return agent_names[node_id]
 
         def route(state):
             last_message = state['messages'][-1]

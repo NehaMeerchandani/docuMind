@@ -111,3 +111,101 @@ async def send_control(document_id, action):
     except WorkflowUpdateFailedError as exc:
         # The validator's reason ("already finished", "already requested").
         raise ValueError(str(exc.cause)) from exc
+
+
+# --- ChatDocumentWorkflow: one long-lived workflow per document uploaded in a chat ---
+
+CHAT_WORKFLOW_NAME = 'ChatDocumentWorkflow'
+
+
+def chat_workflow_id_for(document_id):
+    return f'chat-document-{document_id}'
+
+
+async def start_chat_document_workflow(document, user, session_id, save_to_knowledge_base=False):
+    """Starts (or re-uses) the chat workflow for `document` and returns its id.
+
+    With USE_EXISTING a repeat call attaches to the running workflow. When
+    `save_to_knowledge_base` is set the signal is sent together with the start, so it
+    works the same whether the workflow is new (summarize, then save) or already running.
+    """
+    client = await get_client()
+    workflow_id = chat_workflow_id_for(document.pk)
+    extra = {'start_signal': 'save_to_knowledge_base'} if save_to_knowledge_base else {}
+    await client.start_workflow(
+        CHAT_WORKFLOW_NAME,
+        {
+            'document_id': document.pk,
+            'uploaded_by_id': user.pk,
+            'uploaded_by': user.email,
+            'session_id': str(session_id),
+            'company_id': document.company_id,
+            'filename': document.title,
+        },
+        id=workflow_id,
+        task_queue=settings.TEMPORAL_TASK_QUEUE,
+        id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
+        search_attributes=TypedSearchAttributes([
+            SearchAttributePair(DOCUMENT_ID_KEY, document.pk),
+            SearchAttributePair(SESSION_ID_KEY, str(session_id)),
+            SearchAttributePair(UPLOADED_BY_KEY, user.email),
+            SearchAttributePair(PROCESSING_STEP_KEY, 'pending'),
+        ]),
+        **extra,
+    )
+    return workflow_id
+
+
+async def query_chat_state(document_id):
+    """{step, filename, summary, summary_truncated, summary_error, kb_status, kb_error}.
+    Needs a live worker; works for a workflow that is open (they stay open by design)."""
+    client = await get_client()
+    handle = client.get_workflow_handle(chat_workflow_id_for(document_id))
+    return await handle.query('get_state', rpc_timeout=QUERY_TIMEOUT)
+
+
+async def describe_chat_workflow(document_id):
+    """(status_name, processing_step) from the server -- no worker needed."""
+    client = await get_client()
+    description = await client.get_workflow_handle(chat_workflow_id_for(document_id)).describe(
+        rpc_timeout=QUERY_TIMEOUT,
+    )
+    return description.status.name, description.typed_search_attributes.get(PROCESSING_STEP_KEY)
+
+
+async def signal_chat_workflow(document_id, signal_name):
+    client = await get_client()
+    await client.get_workflow_handle(chat_workflow_id_for(document_id)).signal(signal_name)
+
+
+async def list_task_workflows(email=None, limit=300):
+    """Document workflows from the Temporal server's visibility store -- one call, no
+    worker needed. `email` limits it to workflows started by that user (the UploadedBy
+    search attribute); None means everyone's.
+
+    Returns {document_id: {'chat': info, 'process': info}} where info is
+    {workflow_id, status, step} of the NEWEST run of that kind (a document can have
+    several runs: a restart reuses the workflow id).
+    """
+    client = await get_client()
+    query = f'(WorkflowType = "{WORKFLOW_NAME}" OR WorkflowType = "{CHAT_WORKFLOW_NAME}")'
+    if email:
+        escaped = email.replace('\\', '\\\\').replace('"', '\\"')
+        query += f' AND UploadedBy = "{escaped}"'
+
+    found = {}
+    seen = 0
+    async for execution in client.list_workflows(query):  # newest first
+        seen += 1
+        if seen > limit:
+            break
+        document_id = execution.typed_search_attributes.get(DOCUMENT_ID_KEY)
+        if document_id is None:
+            continue
+        kind = 'chat' if execution.workflow_type == CHAT_WORKFLOW_NAME else 'process'
+        found.setdefault(document_id, {}).setdefault(kind, {
+            'workflow_id': execution.id,
+            'status': execution.status.name if execution.status else '',
+            'step': execution.typed_search_attributes.get(PROCESSING_STEP_KEY) or '',
+        })
+    return found

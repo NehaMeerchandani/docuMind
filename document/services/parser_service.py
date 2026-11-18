@@ -31,10 +31,17 @@ class ParserService:
         content_type = response.headers.get('Content-Type', '').lower()
 
         if 'pdf' in content_type or url.lower().endswith('.pdf'):
-            return DocumentType.PDF, cls._parse_pdf(content)
+            return DocumentType.PDF, cls.clean_text(cls._parse_pdf(content))
         if 'html' in content_type:
-            return DocumentType.WEBPAGE, cls._parse_html(content)
-        return DocumentType.TEXT, content.decode('utf-8', errors='ignore')
+            return DocumentType.WEBPAGE, cls.clean_text(cls._parse_html(content))
+        return DocumentType.TEXT, cls.clean_text(content.decode('utf-8', errors='ignore'))
+
+    @staticmethod
+    def clean_text(text):
+        """Drops NUL (0x00) characters. Some PDFs extract with them, and PostgreSQL cannot
+        store them in a text column ("A string literal cannot contain NUL (0x00)
+        characters"), which made the whole document fail when its chunks were saved."""
+        return text.replace('\x00', '')
 
     @classmethod
     def parse_file(cls, filename, content):
@@ -45,11 +52,11 @@ class ParserService:
         extension = os.path.splitext(filename)[1].lower()
 
         if extension == '.pdf':
-            return DocumentType.PDF, cls._parse_pdf(content)
+            return DocumentType.PDF, cls.clean_text(cls._parse_pdf(content))
         if extension == '.docx':
-            return DocumentType.DOCX, cls._parse_docx(content)
+            return DocumentType.DOCX, cls.clean_text(cls._parse_docx(content))
         if extension in ('.txt', '.md'):
-            return DocumentType.TEXT, content.decode('utf-8', errors='ignore')
+            return DocumentType.TEXT, cls.clean_text(content.decode('utf-8', errors='ignore'))
         raise ValueError(f'Unsupported file type "{extension}". Supported: PDF, DOCX, TXT, MD.')
 
     @classmethod

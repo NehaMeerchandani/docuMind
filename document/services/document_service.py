@@ -80,7 +80,8 @@ class DocumentService:
         cls.set_step(document, ProcessingStep.CHUNKING)
         document.chunks.all().delete()
 
-        chunks_text = ChunkingService.split_text(text)
+        # Also covers pasted text, which never goes through ParserService.
+        chunks_text = ChunkingService.split_text(ParserService.clean_text(text))
         if not chunks_text:
             raise ValueError('No extractable text content was found at this URL.')
 

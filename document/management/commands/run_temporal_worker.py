@@ -7,7 +7,7 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from document.temporal.activities import ALL_ACTIVITIES
-from document.temporal.workflows import ProcessDocumentWorkflow
+from document.temporal.workflows import ChatDocumentWorkflow, ProcessDocumentWorkflow
 
 MAX_CONCURRENT_ACTIVITIES = 8
 
@@ -15,8 +15,8 @@ MAX_CONCURRENT_ACTIVITIES = 8
 class Command(BaseCommand):
     help = (
         'Runs the Temporal worker for document processing: it polls the '
-        f'"{settings.TEMPORAL_TASK_QUEUE}" task queue and executes ProcessDocumentWorkflow '
-        'and its activities. Start the Temporal server first (see INFRA_SETUP_GUIDE.md).'
+        f'"{settings.TEMPORAL_TASK_QUEUE}" task queue and executes ProcessDocumentWorkflow, '
+        'ChatDocumentWorkflow and their activities. Start the Temporal server first (see INFRA_SETUP_GUIDE.md).'
     )
 
     def handle(self, *args, **options):
@@ -33,7 +33,7 @@ class Command(BaseCommand):
             worker = Worker(
                 client,
                 task_queue=settings.TEMPORAL_TASK_QUEUE,
-                workflows=[ProcessDocumentWorkflow],
+                workflows=[ProcessDocumentWorkflow, ChatDocumentWorkflow],
                 activities=ALL_ACTIVITIES,
                 activity_executor=executor,
                 max_concurrent_activities=MAX_CONCURRENT_ACTIVITIES,

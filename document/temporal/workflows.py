@@ -8,8 +8,8 @@ name (see document/temporal/activities.py) and passes only small, JSON-friendly 
 from datetime import timedelta
 
 from temporalio import workflow
-from temporalio.common import RetryPolicy
-from temporalio.exceptions import ActivityError
+from temporalio.common import RetryPolicy, SearchAttributeKey, SearchAttributePair, TypedSearchAttributes
+from temporalio.exceptions import ActivityError, ChildWorkflowError
 
 # How many chunks are embedded per activity call. Pause/cancel are checked between
 # batches, so this is also how long a pause/cancel can take to kick in.
@@ -23,6 +23,7 @@ EMBED_RETRY = RetryPolicy(
     maximum_attempts=8,
 )
 DB_RETRY = RetryPolicy(initial_interval=timedelta(seconds=2), maximum_attempts=5)
+SUMMARY_RETRY = RetryPolicy(initial_interval=timedelta(seconds=5), backoff_coefficient=2.0, maximum_attempts=3)
 
 
 @workflow.defn(name='ProcessDocumentWorkflow')
@@ -129,6 +130,126 @@ class ProcessDocumentWorkflow:
             raise ValueError('The document has already finished (or is finishing) processing.')
         if self._cancel_requested:
             raise ValueError('Cancel has already been requested.')
+
+    def _set_step(self, step):
+        self._step = step
+        workflow.upsert_search_attributes({'ProcessingStep': [step]})
+
+
+@workflow.defn(name='ChatDocumentWorkflow')
+class ChatDocumentWorkflow:
+    """One per document uploaded in a chat. It summarizes the file, then stays open as
+    that document's long-lived state (summary, knowledge-base status) for the chat
+    session, which only stores this workflow's id.
+
+        summarize -> WAIT --save_to_knowledge_base--> child ProcessDocumentWorkflow
+                       |                                (chunk + embed + complete)
+                       +----discard----> end
+
+    It never ends on its own: after the summary and after saving it keeps waiting, so
+    the summary can be queried at any time. `discard` ends it. A failed save can be
+    retried with another `save_to_knowledge_base`.
+    """
+
+    def __init__(self):
+        self._step = 'pending'
+        self._filename = ''
+        self._summary = ''
+        self._summary_truncated = False
+        self._summary_error = ''
+        self._kb_status = 'not_saved'  # not_saved | saving | saved | failed
+        self._kb_error = ''
+        self._save_requested = False
+        self._discarded = False
+
+    @workflow.run
+    async def run(self, params: dict) -> dict:
+        """`params` is the same dict ProcessDocumentWorkflow takes ({document_id,
+        uploaded_by_id, uploaded_by, session_id, company_id, filename})."""
+        document_id = params['document_id']
+        self._filename = params.get('filename') or ''
+
+        self._set_step('summarizing')
+        try:
+            result = await workflow.execute_activity(
+                'summarize_document_file',
+                document_id,
+                start_to_close_timeout=timedelta(minutes=10),
+                heartbeat_timeout=timedelta(minutes=2),
+                retry_policy=SUMMARY_RETRY,
+            )
+            self._summary = result['summary']
+            self._summary_truncated = result['truncated']
+            self._set_step('summary_ready')
+        except ActivityError as exc:
+            # A failed summary must not block saving to the knowledge base.
+            cause = exc.cause
+            self._summary_error = getattr(cause, 'message', None) or str(cause)
+            self._set_step('summary_failed')
+
+        while True:
+            await workflow.wait_condition(lambda: self._discarded or self._save_requested)
+            if self._discarded:
+                break
+            self._save_requested = False
+            if self._kb_status in ('saved', 'saving'):
+                continue
+
+            self._kb_status = 'saving'
+            self._kb_error = ''
+            self._set_step('saving_to_knowledge_base')
+            try:
+                child_result = await workflow.execute_child_workflow(
+                    'ProcessDocumentWorkflow',
+                    params,
+                    id=f'process-document-{document_id}',
+                    search_attributes=TypedSearchAttributes([
+                        SearchAttributePair(SearchAttributeKey.for_int('DocumentId'), document_id),
+                        SearchAttributePair(
+                            SearchAttributeKey.for_keyword('SessionId'), str(params.get('session_id', '')),
+                        ),
+                        SearchAttributePair(
+                            SearchAttributeKey.for_keyword('UploadedBy'), str(params.get('uploaded_by', '')),
+                        ),
+                        SearchAttributePair(SearchAttributeKey.for_keyword('ProcessingStep'), 'pending'),
+                    ]),
+                )
+                if child_result.get('status') == 'completed':
+                    self._kb_status = 'saved'
+                    self._set_step('saved_to_knowledge_base')
+                else:
+                    # e.g. the user cancelled the processing: it can be saved again later.
+                    self._kb_status = 'not_saved'
+                    self._kb_error = f'Processing ended as "{child_result.get("status")}".'
+                    self._set_step('summary_ready' if self._summary else 'summary_failed')
+            except ChildWorkflowError as exc:
+                cause = exc.cause
+                self._kb_status = 'failed'
+                self._kb_error = getattr(cause, 'message', None) or str(cause)
+                self._set_step('knowledge_base_failed')
+
+        self._set_step('discarded')
+        return {'document_id': document_id, 'status': 'discarded', 'kb_status': self._kb_status}
+
+    @workflow.query
+    def get_state(self) -> dict:
+        return {
+            'step': self._step,
+            'filename': self._filename,
+            'summary': self._summary,
+            'summary_truncated': self._summary_truncated,
+            'summary_error': self._summary_error,
+            'kb_status': self._kb_status,
+            'kb_error': self._kb_error,
+        }
+
+    @workflow.signal
+    def save_to_knowledge_base(self) -> None:
+        self._save_requested = True
+
+    @workflow.signal
+    def discard(self) -> None:
+        self._discarded = True
 
     def _set_step(self, step):
         self._step = step

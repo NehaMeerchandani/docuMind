@@ -1,23 +1,58 @@
 import json
+import mimetypes
 import os
 
 from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.contrib import admin
 from django.core.files.storage import default_storage
-from django.http import JsonResponse, StreamingHttpResponse
+from django.core.exceptions import SuspiciousFileOperation
+from django.http import FileResponse, Http404, JsonResponse, StreamingHttpResponse
+from django.utils.html import format_html
 from django.shortcuts import render
-from django.urls import path
+from django.urls import path, reverse
 from django.views import View
 from unfold.admin import ModelAdmin, TabularInline
 
 from base.active_company import get_active_company
+from agents.models import Agent
 from base.admin import AuditableAdminMixin
 from chat.models import Conversation, Message
 from chat.services.chat_service import ChatService
 from document.services.parser_service import ParserService
 
 ALLOWED_UPLOAD_EXTENSIONS = {'.csv', '.xlsx', '.xls', '.pdf', '.docx', '.txt', '.md'}
+
+
+def _open_url(name):
+    return reverse('admin:chat_media_file', kwargs={'name': name})
+
+
+def media_file_view(request, name):
+    """Opens one media file for a logged-in admin. Media is never served publicly."""
+    try:
+        if not default_storage.exists(name):
+            raise Http404('File not found.')
+        stored_file = default_storage.open(name, 'rb')
+    except (SuspiciousFileOperation, ValueError, OSError):
+        raise Http404('File not found.')
+    content_type = mimetypes.guess_type(name)[0] or 'application/octet-stream'
+    return FileResponse(stored_file, content_type=content_type, filename=os.path.basename(name))
+
+
+class HasMediaFilter(admin.SimpleListFilter):
+    title = 'has media'
+    parameter_name = 'has_media'
+
+    def lookups(self, request, model_admin):
+        return (('yes', 'With an uploaded file'), ('no', 'Without'))
+
+    def queryset(self, request, queryset):
+        if self.value() == 'yes':
+            return queryset.exclude(media='')
+        if self.value() == 'no':
+            return queryset.filter(media='')
+        return queryset
 
 
 class MessageInline(TabularInline):
@@ -29,7 +64,16 @@ class MessageInline(TabularInline):
 
 
 def chat_interface_view(request):
+    agents = [
+        {
+            'slug': agent.slug,
+            'name': agent.name,
+            'endpoint': reverse('agent-chat-stream', kwargs={'agent_slug': agent.slug}),
+        }
+        for agent in Agent.objects.filter(is_active=True)
+    ]
     context = {
+        'agents_json': json.dumps(agents),
         **admin.site.each_context(request),
         'active_company': get_active_company(request),
         # Steers which transport static/admin/js/chat.js uses (see main/settings.py) --
@@ -45,10 +89,12 @@ def conversation_list_view(request):
     if company is None:
         return JsonResponse({'success': True, 'error': None, 'data': []})
 
+    queryset = Conversation.objects.filter(user=request.user, company=company)
+    agent_slug = request.GET.get('agent')
+    if agent_slug:
+        queryset = queryset.filter(agent__slug=agent_slug)
     conversations = list(
-        Conversation.objects.filter(user=request.user, company=company)
-        .values('session_id', 'title', 'created_at')
-        .order_by('-created_at'),
+        queryset.values('session_id', 'title', 'created_at').order_by('-created_at'),
     )
     return JsonResponse({'success': True, 'error': None, 'data': conversations})
 
@@ -84,10 +130,12 @@ class AdminChatStreamView(View):
         if uploaded_file is not None:
             question = request.POST.get('question')
             session_id = request.POST.get('session_id') or None
+            agent_slug = request.POST.get('agent') or None
         else:
             body = json.loads(request.body or b'{}')
             question = body.get('question')
             session_id = body.get('session_id')
+            agent_slug = body.get('agent') or None
 
         if not question:
             return JsonResponse(
@@ -132,16 +180,29 @@ class AdminChatStreamView(View):
                 status=400,
             )
 
+        agent = None
+        if agent_slug:
+            agent = await Agent.objects.filter(slug=agent_slug, is_active=True).afirst()
+            if agent is None:
+                return JsonResponse({'success': False, 'error': 'Agent not found.', 'data': None}, status=404)
+
         if session_id:
             try:
                 conversation = await Conversation.objects.aget(session_id=session_id, user=user)
             except Conversation.DoesNotExist:
                 return JsonResponse({'success': False, 'error': 'Conversation not found.', 'data': None}, status=404)
+            if agent is not None and conversation.agent_id not in (None, agent.id):
+                return JsonResponse(
+                    {'success': False, 'error': 'This conversation belongs to a different agent.', 'data': None},
+                    status=400,
+                )
         else:
-            conversation = await Conversation.objects.acreate(company=company, user=user, created_by=user)
+            conversation = await Conversation.objects.acreate(
+                company=company, user=user, created_by=user, agent=agent,
+            )
 
         response = StreamingHttpResponse(
-            ChatService.stream_reply(conversation, company, question, attachment=attachment),
+            ChatService.stream_reply(conversation, company, question, attachment=attachment, agent=agent),
             content_type='text/event-stream',
         )
         response['Cache-Control'] = 'no-cache'
@@ -152,15 +213,15 @@ class AdminChatStreamView(View):
 
 @admin.register(Conversation)
 class ConversationAdmin(AuditableAdminMixin, ModelAdmin):
-    list_display = ['session_id', 'title', 'company', 'user', 'created_at']
-    list_filter = ['company']
+    list_display = ['session_id', 'title', 'agent', 'company', 'user', 'created_at']
+    list_filter = ['company', 'agent']
     search_fields = ['title', 'user__email']
     inlines = [MessageInline]
 
     fieldsets = (
         ('Details', {
             'classes': ('tab',),
-            'fields': ('title', 'company', 'user', 'summary', 'is_active'),
+            'fields': ('title', 'agent', 'company', 'user', 'summary', 'is_active'),
         }),
         ('Audit info', {
             'classes': ('tab',),
@@ -183,6 +244,11 @@ class ConversationAdmin(AuditableAdminMixin, ModelAdmin):
                 name='chat_interface',
             ),
             path(
+                'media-files/<path:name>',
+                self.admin_site.admin_view(media_file_view),
+                name='chat_media_file',
+            ),
+            path(
                 'chat-interface/stream/',
                 AdminChatStreamView.as_view(),
                 name='chat_interface_stream',
@@ -203,14 +269,14 @@ class ConversationAdmin(AuditableAdminMixin, ModelAdmin):
 
 @admin.register(Message)
 class MessageAdmin(AuditableAdminMixin, ModelAdmin):
-    list_display = ['id', 'conversation', 'role', 'message_type', 'tool_name', 'created_at']
-    list_filter = ['role', 'message_type']
+    list_display = ['id', 'conversation', 'role', 'message_type', 'media_link', 'created_at']
+    list_filter = ['role', 'message_type', HasMediaFilter]
     search_fields = ['message']
 
     fieldsets = (
         ('Details', {
             'classes': ('tab',),
-            'fields': ('conversation', 'role', 'message_type', 'tool_name', 'message', 'is_active'),
+            'fields': ('conversation', 'role', 'message_type', 'message', 'media_link', 'is_active'),
         }),
         ('Audit info', {
             'classes': ('tab',),
@@ -220,7 +286,13 @@ class MessageAdmin(AuditableAdminMixin, ModelAdmin):
             ),
         }),
     )
-    readonly_fields = ['created_at', 'updated_at']
+    readonly_fields = ['media_link', 'created_at', 'updated_at']
+
+    @admin.display(description='Uploaded file')
+    def media_link(self, obj):
+        if not obj.media:
+            return '-'
+        return format_html('<a href="{}" target="_blank">{}</a>', _open_url(obj.media.name), obj.media.name)
 
     def get_queryset(self, request):
         return Message.all_objects.all()

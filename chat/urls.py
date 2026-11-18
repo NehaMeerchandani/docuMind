@@ -10,6 +10,7 @@ from chat.views import (
 urlpatterns = [
     path('', ConversationListView.as_view(), name='conversation-list'),
     path('stream/', ChatStreamView.as_view(), name='chat-stream'),
+    path('agents/<slug:agent_slug>/stream/', ChatStreamView.as_view(), name='agent-chat-stream'),
     path('<uuid:session_id>/messages/', ConversationMessagesView.as_view(), name='conversation-messages'),
     path('<uuid:session_id>/', ConversationDeleteView.as_view(), name='conversation-delete'),
 ]

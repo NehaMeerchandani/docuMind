@@ -11,12 +11,14 @@ import functools
 
 import requests
 from django.core.exceptions import ObjectDoesNotExist
+from django.core.files.storage import default_storage
 from django.db import close_old_connections
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from document.models import Document
 from document.services.document_service import DocumentService
+from document.services.parser_service import ParserService
 from user.models import CustomUser
 
 
@@ -102,4 +104,48 @@ def cancel_document(document_id: int) -> None:
     DocumentService.mark_failed(document, 'Cancelled by user')
 
 
-ALL_ACTIVITIES = [parse_and_chunk, embed_batch, complete_document, fail_document, cancel_document]
+@activity.defn(name='summarize_document_file')
+@_close_db_connections
+def summarize_document_file(document_id: int) -> dict:
+    """Reads the chat-uploaded file, summarizes it with the LLM and returns the summary.
+
+    The summary is returned to the workflow (kept in its state, so it lives in Temporal)
+    and is deliberately NOT written to the Document table. Nothing is chunked or embedded
+    here -- that only happens when the user asks to save the document to the knowledge base.
+    """
+    # Imported here: chat.services.tools pulls in LangChain, which only this activity needs.
+    from chat.services.llm_client import get_chat_model
+    from chat.services.tools import MAX_SUMMARY_CHARS, SUMMARY_SYSTEM_PROMPT
+
+    document = _get_document(document_id)
+    if not document.file:
+        raise ApplicationError(f'Document {document_id} has no uploaded file to summarize.', non_retryable=True)
+
+    try:
+        with default_storage.open(document.file.name, 'rb') as stored_file:
+            content = stored_file.read()
+        _doc_type, text = ParserService.parse_file(document.title or document.file.name, content)
+    except ValueError as exc:
+        raise ApplicationError(str(exc), non_retryable=True) from exc
+    except OSError as exc:
+        raise ApplicationError(f'The stored file could not be read: {exc}', non_retryable=True) from exc
+
+    if not text.strip():
+        raise ApplicationError('No extractable text was found in the file.', non_retryable=True)
+
+    activity.heartbeat('summarizing')
+    response = get_chat_model(temperature=0.3).invoke([
+        {'role': 'system', 'content': SUMMARY_SYSTEM_PROMPT},
+        {'role': 'user', 'content': text[:MAX_SUMMARY_CHARS]},
+    ])
+    return {
+        'summary': response.content,
+        'truncated': len(text) > MAX_SUMMARY_CHARS,
+        'characters': len(text),
+    }
+
+
+ALL_ACTIVITIES = [
+    parse_and_chunk, embed_batch, complete_document, fail_document, cancel_document,
+    summarize_document_file,
+]

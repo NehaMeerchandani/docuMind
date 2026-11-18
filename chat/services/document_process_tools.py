@@ -34,11 +34,12 @@ def _label(document):
     return document.title or document.source_url or f'Document {document.pk}'
 
 
-def _resolve_document(company_id, reference):
-    """Finds one document of this company by id or (part of) its title.
-    Returns (document, None), or (None, message) when none / several match."""
+def _resolve_document(company_id, reference, any_company=False):
+    """Finds one document of this company by id or (part of) its title (`any_company`:
+    of any company, for admins). Returns (document, None), or (None, message) when none
+    / several match."""
     reference = str(reference).strip()
-    documents = Document.objects.filter(company_id=company_id)
+    documents = Document.objects.all() if any_company else Document.objects.filter(company_id=company_id)
 
     if reference.isdigit():
         document = documents.filter(pk=int(reference)).first()
@@ -104,14 +105,15 @@ def make_process_document_tool(company_id, conversation):
     async def process_document(
         document_id: int = 0, url: str = '', text: str = '', title: str = '', stored_path: str = '',
     ) -> str:
-        """Process a document so it can be searched later: it is read, split into chunks
-        and embedded, in the background. Call this when the user asks to process, index,
-        ingest or upload a document.
+        """Index a document directly into the knowledge base (read, chunked, embedded) in
+        the background. Use this ONLY for a web page/PDF `url`, pasted `text`, or an
+        existing `document_id`. For a file the user attached in this chat, do NOT use this:
+        "process it" means summarize_with_temporal, and "save it to the knowledge base" /
+        "embed this" means save_to_knowledge_base.
 
         Pass exactly ONE source:
-        - `stored_path`: for a file the user attached in this conversation (use the
-          stored_path from the attachment note).
         - `document_id`: for a document that already exists (e.g. a failed/pending one).
+        - `stored_path`: only if no other chat tool applies.
         - `url`: for a web page or PDF link.
         - `text`: for text the user pasted into the message (with an optional `title`).
 
@@ -225,11 +227,11 @@ def make_control_document_processing_tool(company_id, conversation):
         if action not in CONTROL_ACTIONS:
             return 'action must be "pause", "resume" or "cancel".'
 
-        found, message = await sync_to_async(_resolve_document)(company_id, document)
+        user = await sync_to_async(CustomUser.objects.get)(pk=conversation.user_id)
+        found, message = await sync_to_async(_resolve_document)(company_id, document, user.is_superuser)
         if found is None:
             return message
 
-        user = await sync_to_async(CustomUser.objects.get)(pk=conversation.user_id)
         if not _can_manage(user, found):
             return 'Only the uploader or an admin can control this document\'s processing.'
 

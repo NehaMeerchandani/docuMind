@@ -5,7 +5,8 @@ Django settings for main project.
 import os
 from pathlib import Path
 
-from django.urls import reverse_lazy
+from django.urls import reverse, reverse_lazy
+from django.utils.functional import lazy
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -108,8 +109,8 @@ STATIC_URL = 'static/'
 STATICFILES_DIRS = [BASE_DIR / 'static']
 
 # Chat file attachments (e.g. CSV/Excel uploads for chart generation) are saved here.
-# Not served back to the browser -- parsed server-side only -- so no MEDIA_URL/serving
-# config is needed, just a filesystem destination for default_storage.save().
+# Not publicly served (no MEDIA_URL): the admin opens files through an authenticated
+# view (chat/admin.py, media_file_view) and listed under Chat Uploads.
 MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
@@ -198,6 +199,11 @@ UNFOLD = {
                         'title': 'Chunks',
                         'icon': 'segment',
                         'link': reverse_lazy('admin:document_chunk_changelist'),
+                    },
+                    {
+                        'title': 'Chat Uploads',
+                        'icon': 'attach_file',
+                        'link': lazy(lambda: reverse('admin:chat_message_changelist') + '?has_media=yes', str)(),
                     },
                     {
                         'title': 'Agents',

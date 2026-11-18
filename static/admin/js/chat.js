@@ -15,6 +15,7 @@ document.addEventListener('DOMContentLoaded', function () {
   const messagesEl = document.getElementById('chat-messages');
   const conversationListEl = document.getElementById('conversation-list');
   const newChatBtn = document.getElementById('new-chat-btn');
+  const conversationSearchEl = document.getElementById('conversation-search');
   const csrfToken = document.getElementById('csrf-token').value;
 
   const fileInput = document.getElementById('chat-file-input');
@@ -23,6 +24,22 @@ document.addEventListener('DOMContentLoaded', function () {
   const attachmentNameEl = document.getElementById('chat-attachment-name');
   const attachmentRemoveBtn = document.getElementById('chat-attachment-remove');
 
+  const agentSelect = document.getElementById('agent-select');
+  const agents = JSON.parse(document.getElementById('agents-data').textContent);
+  const AGENT_STORAGE_KEY = 'documind.chat.agent';
+
+  function storedAgentSlug() {
+    try {
+      return window.localStorage.getItem(AGENT_STORAGE_KEY);
+    } catch (err) {
+      return null;
+    }
+  }
+
+  // The agent this chat page talks to. Every conversation belongs to exactly one agent,
+  // so the sidebar lists only that agent's conversations, and switching agents starts a
+  // fresh chat (see the agentSelect change handler).
+  let agentSlug = null;
   let sessionId = null;
   let socket = null;
   let socketSessionId = null;
@@ -65,11 +82,82 @@ document.addEventListener('DOMContentLoaded', function () {
     setRichText(el, (el._raw || '') + chunk);
   }
 
+  const SUGGESTED_PROMPTS = [
+    'What documents do I have?',
+    'Summarize this conversation',
+    'Which documents are still processing?',
+    'Explain what you can help me with',
+  ];
+
+  // Shown whenever the message area is empty (a new chat). Removed as soon as the first
+  // message is appended, so a loaded conversation never shows it.
+  function showEmptyState() {
+    const agent = agents.find(function (a) { return a.slug === agentSlug; });
+
+    const box = document.createElement('div');
+    box.className = 'chat-empty-state';
+
+    const icon = document.createElement('div');
+    icon.className = 'chat-empty-icon';
+    icon.textContent = '\u2726';
+    box.appendChild(icon);
+
+    const title = document.createElement('div');
+    title.className = 'chat-empty-title';
+    title.textContent = agent ? 'Chat with ' + agent.name : 'Start a conversation';
+    box.appendChild(title);
+
+    const sub = document.createElement('div');
+    sub.className = 'chat-empty-sub';
+    sub.textContent = 'Ask about your documents, summarise a file, or build a chart.';
+    box.appendChild(sub);
+
+    const chips = document.createElement('div');
+    chips.className = 'chat-suggestions';
+    SUGGESTED_PROMPTS.forEach(function (prompt) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'chat-suggestion';
+      chip.textContent = prompt;
+      chip.addEventListener('click', function () {
+        input.value = prompt;
+        form.requestSubmit();
+      });
+      chips.appendChild(chip);
+    });
+    box.appendChild(chips);
+
+    messagesEl.appendChild(box);
+  }
+
+  function removeEmptyState() {
+    const box = messagesEl.querySelector('.chat-empty-state');
+    if (box) {
+      box.remove();
+    }
+  }
+
   function clearMessages() {
     messagesEl.innerHTML = '';
+    showEmptyState();
+  }
+
+  function addCopyButton(bubble, textEl) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'chat-copy-btn';
+    btn.textContent = 'Copy';
+    btn.addEventListener('click', function () {
+      navigator.clipboard.writeText(textEl.textContent).then(function () {
+        btn.textContent = 'Copied';
+        setTimeout(function () { btn.textContent = 'Copy'; }, 1200);
+      });
+    });
+    bubble.appendChild(btn);
   }
 
   function appendMessage(role, text) {
+    removeEmptyState();
     const div = document.createElement('div');
     div.className = 'chat-bubble ' + (role === 'user' ? 'user' : 'assistant');
 
@@ -86,12 +174,16 @@ document.addEventListener('DOMContentLoaded', function () {
 
     div.appendChild(label);
     div.appendChild(textEl);
+    if (role !== 'user') {
+      addCopyButton(div, textEl);
+    }
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return div;
   }
 
   function appendNotificationBubble(text) {
+    removeEmptyState();
     // Renders both a just-arrived live push and a system-type row loaded from
     // history (renderHistory below) with the same look, so there's no visual
     // difference between "just happened" and "happened while this chat was closed."
@@ -113,6 +205,7 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   function appendAssistantContainer() {
+    removeEmptyState();
     const wrapper = document.createElement('div');
     wrapper.className = 'chat-bubble assistant';
 
@@ -128,6 +221,7 @@ document.addEventListener('DOMContentLoaded', function () {
     wrapper.appendChild(label);
     wrapper.appendChild(toolLog);
     wrapper.appendChild(textEl);
+    addCopyButton(wrapper, textEl);
     messagesEl.appendChild(wrapper);
     messagesEl.scrollTop = messagesEl.scrollHeight;
 
@@ -394,6 +488,373 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   }
 
+  // ---------- Action buttons and the task table ----------
+  // Every button carries `text`; clicking sends it as the user's next message, exactly as
+  // if it had been typed, so the assistant handles it like any other request.
+
+  function sendChatText(text) {
+    if (input.disabled) {
+      return;
+    }
+    input.value = text;
+    form.requestSubmit();
+  }
+
+  function renderWidget(container, widget) {
+    if (widget.type === 'chart') {
+      renderChartWidget(container, widget.data);
+    } else if (widget.type === 'task_table') {
+      renderTaskTable(container, widget.data, false);
+    } else if (widget.type === 'actions') {
+      renderActionButtons(container, widget.data.buttons || []);
+    }
+  }
+
+  function makeActionButton(spec, disabled, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'chat-action-btn ' + (spec.style || 'secondary');
+    button.textContent = spec.label;
+    button.title = spec.text;
+    button.disabled = !!disabled;
+    button.addEventListener('click', onClick);
+    return button;
+  }
+
+  function renderActionButtons(container, buttons) {
+    if (!buttons.length) {
+      return;
+    }
+    const group = document.createElement('div');
+    group.className = 'chat-action-group';
+    const all = [];
+    buttons.forEach(function (spec) {
+      const button = makeActionButton(spec, false, function () {
+        all.forEach(function (b) { b.disabled = true; });
+        button.classList.add('chosen');
+        sendChatText(spec.text);
+      });
+      all.push(button);
+      group.appendChild(button);
+    });
+    container.appendChild(group);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  // What a row's action codes (chat/services/task_service.py) turn into. `text` is sent as
+  // the user's message when the button is clicked.
+  const TASK_ACTIONS = {
+    process: { label: 'Process it', style: 'primary', text: function (id) { return 'Process document ' + id; } },
+    save: { label: 'Save to knowledge base', style: 'success', text: function (id) { return 'Save document ' + id + ' to the knowledge base'; } },
+    pause: { label: 'Pause', style: 'warning', text: function (id) { return 'Pause processing of document ' + id; } },
+    resume: { label: 'Resume', style: 'primary', text: function (id) { return 'Resume processing of document ' + id; } },
+    cancel: { label: 'Cancel', style: 'danger', text: function (id) { return 'Cancel processing of document ' + id; } },
+    retry: { label: 'Retry', style: 'primary', text: function (id) { return 'Retry saving document ' + id + ' to the knowledge base'; } },
+    summary: { label: 'View summary', style: 'soft', text: function (id) { return 'Show the summary of document ' + id; } }
+  };
+
+  // Filter chips. A row's status_kind is ok (in knowledge base) | run (running or
+  // paused-in-progress) | warn (paused) | fail | idle (pending).
+  const TASK_FILTERS = [
+    { key: 'todo', label: 'To do', match: function (k) { return k !== 'ok'; } },
+    { key: 'pending', label: 'Pending', match: function (k) { return k === 'idle'; } },
+    { key: 'running', label: 'Running', match: function (k) { return k === 'run' || k === 'warn'; } },
+    { key: 'failed', label: 'Failed', match: function (k) { return k === 'fail'; } },
+    { key: 'done', label: 'Done', match: function (k) { return k === 'ok'; } },
+    { key: 'all', label: 'All', match: function () { return true; } }
+  ];
+
+  function renderTaskTable(container, data, readonly) {
+    const rows = data.rows || [];
+    // Let the bubble use the full width of the conversation column while it holds a table.
+    container.classList.add('has-table');
+    const card = document.createElement('div');
+    card.className = 'chat-widget-table';
+
+    const header = document.createElement('div');
+    header.className = 'chat-widget-table-header';
+    const titleBox = document.createElement('div');
+    const title = document.createElement('div');
+    title.className = 'chat-widget-table-title';
+    title.textContent = data.title || 'Tasks';
+    const scope = document.createElement('div');
+    scope.className = 'chat-widget-table-scope';
+    scope.textContent = data.scope_label || '';
+    titleBox.appendChild(title);
+    titleBox.appendChild(scope);
+    header.appendChild(titleBox);
+    if (data.switches && data.switches.length) {
+      // Admins: Mine / <this company> / All companies. The active one is highlighted;
+      // the others send their text, which asks for that view.
+      const seg = document.createElement('div');
+      seg.className = 'chat-seg';
+      data.switches.forEach(function (option) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = option.label;
+        btn.title = option.text;
+        btn.className = option.active ? 'active' : '';
+        btn.disabled = !!readonly || !!option.active;
+        btn.addEventListener('click', function () { sendChatText(option.text); });
+        seg.appendChild(btn);
+      });
+      header.appendChild(seg);
+    }
+    card.appendChild(header);
+
+    if (data.notice) {
+      const notice = document.createElement('div');
+      notice.className = 'chat-widget-table-notice';
+      notice.textContent = data.notice;
+      card.appendChild(notice);
+    }
+
+    // Toolbar: filter chips (with counts) and a search box.
+    const toolbar = document.createElement('div');
+    toolbar.className = 'chat-widget-table-toolbar';
+    const chips = document.createElement('div');
+    chips.className = 'chat-chip-row';
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.className = 'chat-widget-table-search';
+    search.placeholder = 'Search name or id...';
+    toolbar.appendChild(chips);
+    toolbar.appendChild(search);
+    card.appendChild(toolbar);
+
+    const scroller = document.createElement('div');
+    scroller.className = 'chat-widget-table-scroll';
+    const table = document.createElement('table');
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    (data.columns || []).forEach(function (name) {
+      const th = document.createElement('th');
+      th.textContent = name;
+      headRow.appendChild(th);
+    });
+    head.appendChild(headRow);
+    table.appendChild(head);
+
+    const body = document.createElement('tbody');
+    const rowEls = rows.map(function (row) {
+      const tr = document.createElement('tr');
+      tr.dataset.kind = row.status_kind || 'idle';
+      tr.dataset.search = (row.name + ' ' + row.id + ' ' + (row.by || '')).toLowerCase();
+      tr.dataset.company = row.company || '';
+
+      // Document: name, then id and workflow ids as small copyable tags.
+      const docTd = document.createElement('td');
+      docTd.className = 'doc';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'doc-name';
+      nameEl.textContent = row.name;
+      docTd.appendChild(nameEl);
+      const meta = document.createElement('div');
+      meta.className = 'doc-meta';
+      const idTag = document.createElement('span');
+      idTag.className = 'chat-tag';
+      idTag.textContent = 'ID ' + row.id;
+      meta.appendChild(idTag);
+      if (row.by) {
+        const byTag = document.createElement('span');
+        byTag.className = 'chat-tag by';
+        byTag.textContent = 'by ' + row.by;
+        byTag.title = 'Uploaded by';
+        meta.appendChild(byTag);
+      }
+      if (row.company) {
+        const companyTag = document.createElement('span');
+        companyTag.className = 'chat-tag company';
+        companyTag.textContent = row.company;
+        companyTag.title = 'Company';
+        meta.appendChild(companyTag);
+      }
+      [['Chat workflow', row.chat_workflow_id], ['Process workflow', row.process_workflow_id]].forEach(function (pair) {
+        if (!pair[1]) {
+          return;
+        }
+        const tag = document.createElement('button');
+        tag.type = 'button';
+        tag.className = 'chat-tag mono';
+        tag.textContent = pair[1];
+        tag.title = pair[0] + ' - click to copy';
+        tag.addEventListener('click', function () {
+          if (navigator.clipboard) {
+            navigator.clipboard.writeText(pair[1]);
+          }
+          tag.classList.add('copied');
+          tag.title = 'Copied';
+          setTimeout(function () { tag.classList.remove('copied'); tag.title = pair[0] + ' - click to copy'; }, 1200);
+        });
+        meta.appendChild(tag);
+      });
+      docTd.appendChild(meta);
+      tr.appendChild(docTd);
+
+      // Status: badge, with the summary state underneath.
+      const statusTd = document.createElement('td');
+      statusTd.className = 'status';
+      // "Failed: reason" -> a short badge plus the reason underneath (a long reason would
+      // otherwise stretch the pill into a blob).
+      const colon = row.status.indexOf(': ');
+      const badge = document.createElement('span');
+      badge.className = 'chat-badge ' + (row.status_kind || 'idle');
+      badge.textContent = colon > 0 ? row.status.slice(0, colon) : row.status;
+      badge.title = row.status;
+      statusTd.appendChild(badge);
+      if (colon > 0) {
+        const reason = document.createElement('div');
+        reason.className = 'doc-reason';
+        reason.textContent = row.status.slice(colon + 2);
+        reason.title = row.status.slice(colon + 2);
+        statusTd.appendChild(reason);
+      }
+      // "Embedding 190/271" -> a thin progress bar.
+      const progress = /(\d+)\/(\d+)/.exec(row.status);
+      if (progress && Number(progress[2]) > 0) {
+        const bar = document.createElement('div');
+        bar.className = 'chat-progress';
+        const fill = document.createElement('div');
+        fill.style.width = Math.min(100, Math.round(100 * Number(progress[1]) / Number(progress[2]))) + '%';
+        bar.appendChild(fill);
+        statusTd.appendChild(bar);
+      }
+      if (row.summary && row.summary !== '-') {
+        const summaryEl = document.createElement('div');
+        summaryEl.className = 'doc-summary';
+        summaryEl.textContent = 'Summary: ' + row.summary.toLowerCase();
+        statusTd.appendChild(summaryEl);
+      }
+      tr.appendChild(statusTd);
+
+      const actionsTd = document.createElement('td');
+      actionsTd.className = 'actions';
+      (row.actions || []).forEach(function (code) {
+        const action = TASK_ACTIONS[code];
+        if (!action) {
+          return;
+        }
+        const text = action.text(row.id);
+        actionsTd.appendChild(makeActionButton(
+          { label: action.label, text: text, style: action.style }, readonly,
+          function () { sendChatText(text); }
+        ));
+      });
+      if (!actionsTd.childNodes.length) {
+        const none = document.createElement('span');
+        none.className = 'doc-summary';
+        none.textContent = 'No actions';
+        actionsTd.appendChild(none);
+      }
+      tr.appendChild(actionsTd);
+
+      body.appendChild(tr);
+      return tr;
+    });
+    const emptyRow = document.createElement('tr');
+    emptyRow.className = 'empty';
+    const emptyTd = document.createElement('td');
+    emptyTd.colSpan = 3;
+    emptyTd.textContent = 'No documents match this filter.';
+    emptyRow.appendChild(emptyTd);
+    emptyRow.hidden = true;
+    body.appendChild(emptyRow);
+    table.appendChild(body);
+    scroller.appendChild(table);
+    card.appendChild(scroller);
+
+    const footer = document.createElement('div');
+    footer.className = 'chat-widget-table-footer';
+    card.appendChild(footer);
+
+    // Start on "To do" (everything not finished) when there is anything to do, so the
+    // finished documents do not bury it; otherwise show all.
+    let activeKey = rows.some(function (r) { return r.status_kind !== 'ok'; }) ? 'todo' : 'all';
+    let activeCompany = '';
+    const chipEls = {};
+    const companyChipEls = {};
+
+    function inCompany(tr) {
+      return !activeCompany || tr.dataset.company === activeCompany;
+    }
+
+    function applyFilter() {
+      const filter = TASK_FILTERS.filter(function (f) { return f.key === activeKey; })[0];
+      const needle = search.value.trim().toLowerCase();
+      let shown = 0;
+      rowEls.forEach(function (tr) {
+        const visible = inCompany(tr) && filter.match(tr.dataset.kind) &&
+          (!needle || tr.dataset.search.indexOf(needle) !== -1);
+        tr.hidden = !visible;
+        if (visible) {
+          shown += 1;
+        }
+      });
+      emptyRow.hidden = shown !== 0;
+      // Status counts follow the company filter, so they always add up to what you see.
+      TASK_FILTERS.forEach(function (f) {
+        const count = rowEls.filter(function (tr) { return inCompany(tr) && f.match(tr.dataset.kind); }).length;
+        chipEls[f.key].textContent = f.label + ' (' + count + ')';
+        chipEls[f.key].classList.toggle('active', f.key === activeKey);
+      });
+      Object.keys(companyChipEls).forEach(function (name) {
+        companyChipEls[name].classList.toggle('active', name === activeCompany);
+      });
+      footer.textContent = 'Showing ' + shown + ' of ' + rows.length + '. ' +
+        (readonly ? 'Snapshot from ' : 'As of ') + (data.generated_at || '') +
+        (readonly ? ' - ask again for a live view.' : '.') +
+        (data.truncated ? ' Only the newest ' + rows.length + ' documents are listed.' : '');
+    }
+
+    TASK_FILTERS.forEach(function (f) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'chat-chip';
+      chip.addEventListener('click', function () {
+        activeKey = f.key;
+        applyFilter();
+      });
+      chipEls[f.key] = chip;
+      chips.appendChild(chip);
+    });
+
+    // All-companies view: a second row of chips filters by company.
+    const companyCounts = {};
+    rows.forEach(function (r) {
+      if (r.company) {
+        companyCounts[r.company] = (companyCounts[r.company] || 0) + 1;
+      }
+    });
+    const companyNames = Object.keys(companyCounts).sort();
+    if (companyNames.length) {
+      const companyRow = document.createElement('div');
+      companyRow.className = 'chat-chip-row chat-company-row';
+      const caption = document.createElement('span');
+      caption.className = 'chat-chip-caption';
+      caption.textContent = 'Company';
+      companyRow.appendChild(caption);
+      [''].concat(companyNames).forEach(function (name) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'chat-chip company';
+        chip.textContent = name ? name + ' (' + companyCounts[name] + ')' : 'All (' + rows.length + ')';
+        chip.addEventListener('click', function () {
+          activeCompany = name;
+          applyFilter();
+        });
+        companyChipEls[name] = chip;
+        companyRow.appendChild(chip);
+      });
+      toolbar.parentNode.insertBefore(companyRow, toolbar);
+    }
+
+    search.addEventListener('input', applyFilter);
+    applyFilter();
+
+    container.appendChild(card);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
   // ---------- WebSocket transport ----------
 
   function onSocketMessage(event) {
@@ -421,7 +882,7 @@ document.addEventListener('DOMContentLoaded', function () {
       socket.close();
     }
 
-    const url = wsScheme + '://' + wsHost + '/ws/chat/' + id + '/';
+    const url = wsScheme + '://' + wsHost + '/ws/chat/' + id + '/?agent=' + encodeURIComponent(agentSlug || '');
     socket = new WebSocket(url);
     socketSessionId = id;
 
@@ -453,13 +914,11 @@ document.addEventListener('DOMContentLoaded', function () {
         } else if (parsed.tool_end) {
           markToolEnded(assistant.toolLog, parsed.tool_end.name, parsed.tool_end.result_preview);
         } else if (parsed.widget) {
-          // A structured result (currently only charts) sent by ChatService instead of
+          // A structured result (chart, task table, action buttons) sent by ChatService instead of
           // the usual text preview. It counts as a tool call, so the "answered
           // directly, no tool used" note is not shown for this turn.
           anyToolUsed = true;
-          if (parsed.widget.type === 'chart') {
-            renderChartWidget(assistant.wrapper, parsed.widget.data);
-          }
+          renderWidget(assistant.wrapper, parsed.widget);
         } else if (parsed.content) {
           appendRichText(assistant.textEl, parsed.content);
           messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -492,6 +951,7 @@ document.addEventListener('DOMContentLoaded', function () {
       // branches on request.FILES to tell this apart from the plain-JSON path below.
       const formData = new FormData();
       formData.append('question', question);
+      formData.append('agent', agentSlug || '');
       if (sessionId) {
         formData.append('session_id', sessionId);
       }
@@ -511,6 +971,7 @@ document.addEventListener('DOMContentLoaded', function () {
         body: JSON.stringify({
           question: question,
           session_id: sessionId,
+          agent: agentSlug,
         }),
       };
     }
@@ -561,13 +1022,11 @@ document.addEventListener('DOMContentLoaded', function () {
         } else if (parsed.tool_end) {
           markToolEnded(assistant.toolLog, parsed.tool_end.name, parsed.tool_end.result_preview);
         } else if (parsed.widget) {
-          // A structured result (currently only charts) sent by ChatService instead of
+          // A structured result (chart, task table, action buttons) sent by ChatService instead of
           // the usual text preview. It counts as a tool call, so the "answered
           // directly, no tool used" note is not shown for this turn.
           anyToolUsed = true;
-          if (parsed.widget.type === 'chart') {
-            renderChartWidget(assistant.wrapper, parsed.widget.data);
-          }
+          renderWidget(assistant.wrapper, parsed.widget);
         } else if (parsed.content) {
           appendRichText(assistant.textEl, parsed.content);
           messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -584,22 +1043,59 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // ---------- Conversation list / history ----------
 
-  async function loadConversations() {
-    const response = await fetch(conversationsUrl);
-    const body = await response.json();
+  let loadedConversations = [];
+
+  function conversationGroup(createdAt) {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const day = 24 * 60 * 60 * 1000;
+    const age = startOfToday - new Date(createdAt);
+    if (age <= 0) return 'Today';
+    if (age <= day) return 'Yesterday';
+    if (age <= 7 * day) return 'Previous 7 days';
+    return 'Older';
+  }
+
+  function renderConversationList() {
+    const query = conversationSearchEl.value.trim().toLowerCase();
     conversationListEl.innerHTML = '';
 
-    (body.data || []).forEach(function (conv) {
+    let lastGroup = null;
+    loadedConversations.forEach(function (conv) {
+      const title = conv.title || '(untitled)';
+      if (query && title.toLowerCase().indexOf(query) === -1) {
+        return;
+      }
+
+      const group = conversationGroup(conv.created_at);
+      if (group !== lastGroup) {
+        const label = document.createElement('div');
+        label.className = 'chat-group-label';
+        label.textContent = group;
+        conversationListEl.appendChild(label);
+        lastGroup = group;
+      }
+
       const btn = document.createElement('button');
       btn.type = 'button';
       const isActive = conv.session_id === sessionId;
       btn.className = 'chat-conversation-item' + (isActive ? ' active' : '');
-      btn.textContent = conv.title || '(untitled)';
+      btn.textContent = title;
+      btn.title = title;
       btn.addEventListener('click', function () {
         loadConversation(conv.session_id);
       });
       conversationListEl.appendChild(btn);
     });
+  }
+
+  conversationSearchEl.addEventListener('input', renderConversationList);
+
+  async function loadConversations() {
+    const response = await fetch(conversationsUrl + '?agent=' + encodeURIComponent(agentSlug || ''));
+    const body = await response.json();
+    loadedConversations = body.data || [];
+    renderConversationList();
   }
 
   async function loadConversation(id) {
@@ -678,6 +1174,10 @@ document.addEventListener('DOMContentLoaded', function () {
           const parsed = JSON.parse(mediaRow.message);
           if (parsed.chart) {
             renderChartWidget(assistant.wrapper, parsed.chart);
+          } else if (parsed.table) {
+            // A saved table is a snapshot: its buttons are disabled so an old "Pause" is
+            // never clicked on something that has since finished.
+            renderTaskTable(assistant.wrapper, parsed.table, true);
           }
         } catch (err) {
           // Malformed/legacy media row -- skip it rather than breaking history render.
@@ -718,6 +1218,53 @@ document.addEventListener('DOMContentLoaded', function () {
     setPendingFile(null);
   });
 
+  function selectAgent(slug) {
+    agentSlug = slug;
+    try {
+      window.localStorage.setItem(AGENT_STORAGE_KEY, slug);
+    } catch (err) {
+      // Remembering the last agent is a convenience only.
+    }
+  }
+
+  agents.forEach(function (agent) {
+    const option = document.createElement('option');
+    option.value = agent.slug;
+    option.textContent = agent.name;
+    agentSelect.appendChild(option);
+  });
+
+  const initialAgent = agents.find(function (a) { return a.slug === storedAgentSlug(); }) || agents[0];
+  if (initialAgent) {
+    agentSelect.value = initialAgent.slug;
+    selectAgent(initialAgent.slug);
+  }
+
+  agentSelect.addEventListener('change', function () {
+    selectAgent(agentSelect.value);
+    sessionId = null;
+    if (socket) {
+      socket.close();
+    }
+    clearMessages();
+    loadConversations();
+    input.focus();
+  });
+
+  function resizeInput() {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+  }
+
+  input.addEventListener('input', resizeInput);
+  input.addEventListener('keydown', function (event) {
+    // Enter sends; Shift+Enter inserts a new line.
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
   newChatBtn.addEventListener('click', function () {
     sessionId = null;
     if (socket) {
@@ -751,10 +1298,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
     appendMessage('user', question + (fileToSend ? ' \ud83d\udcce ' + fileToSend.name : ''));
     input.value = '';
+    resizeInput();
     input.disabled = true;
 
     const assistant = appendAssistantContainer();
     const wasNewConversation = !sessionId;
+    // Shows the "typing" dots until the first text arrives (see .typing in the template).
+    assistant.wrapper.classList.add('typing');
 
     try {
       if (fileToSend) {
@@ -780,6 +1330,7 @@ document.addEventListener('DOMContentLoaded', function () {
       assistant.textEl.textContent = 'Error: ' + err.message;
     }
 
+    assistant.wrapper.classList.remove('typing');
     input.disabled = false;
     input.focus();
 
@@ -788,5 +1339,6 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   });
 
+  showEmptyState();
   loadConversations();
 });

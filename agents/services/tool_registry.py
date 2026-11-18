@@ -1,3 +1,9 @@
+from chat.services.chat_document_tools import (
+    make_get_document_summary_tool,
+    make_list_document_tasks_tool,
+    make_save_to_knowledge_base_tool,
+    make_summarize_with_temporal_tool,
+)
 from chat.services.document_process_tools import (
     make_control_document_processing_tool,
     make_get_document_status_tool,
@@ -62,7 +68,26 @@ class ToolRegistry:
         },
         'list_document_process': {
             'label': 'List document processing status',
-            'build': lambda company_id, conversation: make_list_document_process_tool(company_id),
+            'build': lambda company_id, conversation: make_list_document_process_tool(company_id, conversation),
+        },
+        # Chat-level Temporal documents: the summary lives in a long-running workflow whose
+        # id the chat remembers; saving to the knowledge base reuses the processing workflow.
+        'summarize_with_temporal': {
+            'label': 'Summarize an attached document (Temporal, kept in chat)',
+            'build': lambda company_id, conversation: make_summarize_with_temporal_tool(company_id, conversation),
+        },
+        # The task table (own documents by default) with a button per action.
+        'list_document_tasks': {
+            'label': 'Show my document tasks (table with actions)',
+            'build': lambda company_id, conversation: make_list_document_tasks_tool(company_id, conversation),
+        },
+        'get_document_summary': {
+            'label': 'Show a document\'s saved summary',
+            'build': lambda company_id, conversation: make_get_document_summary_tool(company_id, conversation),
+        },
+        'save_to_knowledge_base': {
+            'label': 'Save a document to the knowledge base',
+            'build': lambda company_id, conversation: make_save_to_knowledge_base_tool(company_id, conversation),
         },
         # Charts tabular data from an attached CSV/Excel file or from data pasted into
         # the message. Like summarize_session it needs the conversation (to find the
