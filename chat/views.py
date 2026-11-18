@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 
 from base.views import CompanyScopedMixin, EnvelopeResponseMixin
 from basic.utils.response import APIResponse
+from agents.models import Agent
 from chat.models import Conversation
 from chat.serializers import ConversationSerializer, MessageSerializer
 from chat.services.chat_service import ChatService
@@ -25,7 +26,11 @@ class ConversationListView(EnvelopeResponseMixin, CompanyScopedMixin, generics.L
 
     def get_queryset(self):
         company = self.get_active_company(self.request)
-        return Conversation.objects.filter(company=company, user=self.request.user)
+        queryset = Conversation.objects.filter(company=company, user=self.request.user)
+        agent_slug = self.request.query_params.get('agent')
+        if agent_slug:
+            queryset = queryset.filter(agent__slug=agent_slug)
+        return queryset
 
 
 class ConversationMessagesView(EnvelopeResponseMixin, generics.ListAPIView):
@@ -66,21 +71,22 @@ class ConversationDeleteView(EnvelopeResponseMixin, APIView):
 
 @method_decorator(csrf_exempt, name='dispatch')
 class ChatStreamView(View):
-    async def post(self, request):
+    async def post(self, request, agent_slug=None):
         try:
             user = await self._authenticate(request)
+            agent = await self._get_agent(agent_slug)
             body = json.loads(request.body or b'{}')
             company = await self._get_membership_checked_company(user, body.get('company_id'))
             question = body.get('question')
             if not question:
                 return JsonResponse({'success': False, 'error': 'question is required.', 'data': None}, status=400)
 
-            conversation = await self._get_or_create_conversation(body.get('session_id'), user, company)
+            conversation = await self._get_or_create_conversation(body.get('session_id'), user, company, agent)
         except _ChatRequestError as exc:
             return JsonResponse({'success': False, 'error': exc.message, 'data': None}, status=exc.status_code)
 
         response = StreamingHttpResponse(
-            ChatService.stream_reply(conversation, company, question),
+            ChatService.stream_reply(conversation, company, question, agent=agent),
             content_type='text/event-stream',
         )
         response['Cache-Control'] = 'no-cache'
@@ -119,9 +125,19 @@ class ChatStreamView(View):
 
         return company
 
-    async def _get_or_create_conversation(self, session_id, user, company):
+    async def _get_agent(self, agent_slug):
+        if agent_slug is None:
+            return None
+        agent = await Agent.objects.filter(slug=agent_slug, is_active=True).afirst()
+        if agent is None:
+            raise _ChatRequestError('Agent not found.', 404)
+        return agent
+
+    async def _get_or_create_conversation(self, session_id, user, company, agent=None):
         if not session_id:
-            return await Conversation.objects.acreate(company=company, user=user, created_by=user)
+            return await Conversation.objects.acreate(
+                company=company, user=user, created_by=user, agent=agent,
+            )
 
         try:
             conversation = await Conversation.objects.aget(session_id=session_id)
@@ -130,6 +146,9 @@ class ChatStreamView(View):
 
         if conversation.user_id != user.id:
             raise _ChatRequestError('Conversation not found.', 404)
+
+        if agent is not None and conversation.agent_id not in (None, agent.id):
+            raise _ChatRequestError('This conversation belongs to a different agent.', 400)
 
         return conversation
 

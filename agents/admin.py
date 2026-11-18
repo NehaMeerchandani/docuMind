@@ -3,7 +3,7 @@ import json
 from django.contrib import admin
 from django.http import JsonResponse
 from django.shortcuts import render
-from django.urls import path
+from django.urls import path, reverse
 from django.views.decorators.http import require_POST
 from unfold.admin import ModelAdmin
 
@@ -11,6 +11,19 @@ from agents.graph.builder import WorkflowGraphBuilder, WorkflowValidationError
 from agents.models import Agent
 from agents.services.tool_registry import ToolRegistry
 from base.admin import AuditableAdminMixin
+from chat.services.prompt_service import PromptService
+
+
+def _prompt_status(workflow_json):
+    """{slug: True/False/None} for every step's prompt slug -- whether that prompt exists
+    in Langfuse (None = couldn't tell). Lets the editor flag a typo'd slug, which would
+    otherwise silently run on the built-in fallback prompt."""
+    slugs = {
+        (node.get('data') or {}).get('name')
+        for node in (workflow_json or {}).get('nodes') or []
+        if node.get('type') == 'step'
+    }
+    return {slug: PromptService.prompt_exists(slug) for slug in slugs if slug}
 
 
 def workflow_editor_view(request):
@@ -22,7 +35,7 @@ def workflow_editor_view(request):
 
 
 def agent_list_view(request):
-    agents = list(Agent.objects.all().values('id', 'name', 'description'))
+    agents = list(Agent.objects.all().values('id', 'name', 'slug', 'description'))
     return JsonResponse({'success': True, 'error': None, 'data': agents})
 
 
@@ -38,8 +51,11 @@ def agent_detail_view(request, pk):
         'data': {
             'id': agent.id,
             'name': agent.name,
+            'slug': agent.slug,
+            'endpoint': reverse('agent-chat-stream', kwargs={'agent_slug': agent.slug}),
             'description': agent.description,
             'workflow_json': agent.workflow_json,
+            'prompt_status': _prompt_status(agent.workflow_json),
         },
     })
 
@@ -64,6 +80,21 @@ def agent_save_view(request):
 
     if not name:
         return JsonResponse({'success': False, 'error': 'name is required.', 'data': None}, status=400)
+
+    slug = Agent.slug_for(name)
+    if not slug:
+        return JsonResponse(
+            {'success': False, 'error': 'name must contain at least one letter or number.', 'data': None},
+            status=400,
+        )
+    slug_taken = Agent.objects.filter(slug=slug)
+    if body.get('id'):
+        slug_taken = slug_taken.exclude(pk=body['id'])
+    if slug_taken.exists():
+        return JsonResponse(
+            {'success': False, 'error': f'An agent with the slug "{slug}" already exists.', 'data': None},
+            status=400,
+        )
 
     try:
         WorkflowGraphBuilder.validate(workflow_json)
@@ -92,18 +123,27 @@ def agent_save_view(request):
             created_by=request.user, updated_by=request.user,
         )
 
-    return JsonResponse({'success': True, 'error': None, 'data': {'id': agent.id}})
+    return JsonResponse({
+        'success': True,
+        'error': None,
+        'data': {
+            'id': agent.id,
+            'slug': agent.slug,
+            'endpoint': reverse('agent-chat-stream', kwargs={'agent_slug': agent.slug}),
+            'prompt_status': _prompt_status(workflow_json),
+        },
+    })
 
 
 @admin.register(Agent)
 class AgentAdmin(AuditableAdminMixin, ModelAdmin):
-    list_display = ['id', 'name', 'description', 'created_at']
+    list_display = ['id', 'name', 'slug', 'description', 'created_at']
     search_fields = ['name', 'description']
 
     fieldsets = (
         ('Details', {
             'classes': ('tab',),
-            'fields': ('name', 'description', 'workflow_json', 'is_active'),
+            'fields': ('name', 'slug', 'description', 'workflow_json', 'is_active'),
         }),
         ('Audit info', {
             'classes': ('tab',),
@@ -113,7 +153,7 @@ class AgentAdmin(AuditableAdminMixin, ModelAdmin):
             ),
         }),
     )
-    readonly_fields = ['created_at', 'updated_at']
+    readonly_fields = ['slug', 'created_at', 'updated_at']
 
     def get_urls(self):
         custom_urls = [

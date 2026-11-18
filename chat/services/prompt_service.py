@@ -1,8 +1,10 @@
 import json
+import logging
 import os
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langfuse import Langfuse
+from langfuse.api import NotFoundError
 
 from chat.models import MessageRole, MessageType
 
@@ -22,6 +24,8 @@ FALLBACK_SYSTEM_PROMPT = (
     "no plausible connection to this company (e.g. 'what is 2+2', 'what is the capital of "
     "France'). When in doubt, call search_documents rather than answering directly."
 )
+
+logger = logging.getLogger(__name__)
 
 
 class PromptService:
@@ -57,6 +61,14 @@ class PromptService:
         exist yet there -- this keeps a brand-new STEP node usable immediately after
         being authored in the editor, before anyone has created its prompt in Langfuse.
         """
+        prompt = cls.get_prompt_client(slug, fallback=fallback)
+        return prompt.compile(), (prompt.config or {})
+
+    @classmethod
+    def get_prompt_client(cls, slug, fallback=''):
+        """The Langfuse prompt client itself (not just its text), so callers can read
+        `.version` / `.is_fallback` and link it to a trace. `is_fallback` is True when the
+        slug was not found (or Langfuse was unreachable) and `fallback` text is in use."""
         client = cls.get_langfuse_client()
         prompt = client.get_prompt(
             slug,
@@ -64,7 +76,26 @@ class PromptService:
             fallback=fallback,
             cache_ttl_seconds=60,
         )
-        return prompt.compile(), (prompt.config or {})
+        if getattr(prompt, 'is_fallback', False):
+            logger.warning(
+                "Langfuse prompt '%s' (label 'production') was not found -- the built-in "
+                'fallback prompt is being used instead. Check the step name for typos.',
+                slug,
+            )
+        return prompt
+
+    @classmethod
+    def prompt_exists(cls, slug):
+        """True/False if Langfuse says the prompt does/doesn't exist under the
+        'production' label; None if that couldn't be determined (e.g. Langfuse is
+        unreachable), so callers don't report a false "missing"."""
+        try:
+            cls.get_langfuse_client().get_prompt(slug, label='production', cache_ttl_seconds=0)
+            return True
+        except NotFoundError:
+            return False
+        except Exception:
+            return None
 
     @classmethod
     def build_history(cls, conversation):
@@ -106,6 +137,10 @@ class PromptService:
         if attachment_reminder:
             messages.append(attachment_reminder)
 
+        documents_reminder = cls._build_document_workflows_reminder(conversation)
+        if documents_reminder:
+            messages.append(documents_reminder)
+
         return messages
 
     @classmethod
@@ -116,18 +151,27 @@ class PromptService:
         in this conversation. Just enough so the model knows a file exists and can decide
         to call build_chart_from_file again on a follow-up turn.
         """
-        context_message = (
-            conversation.messages.filter(message_type=MessageType.CONTEXT)
-            .order_by('-created_at')
-            .first()
-        )
-        if context_message is None or not context_message.message:
+        # Newest attachment row. document_workflow rows (a Temporal document's name and
+        # workflow id) are CONTEXT rows too, but they must not hide the attachment reminder.
+        payload = None
+        for context_message in conversation.messages.filter(message_type=MessageType.CONTEXT).order_by('-created_at'):
+            try:
+                candidate = json.loads(context_message.message or '')
+            except (TypeError, ValueError):
+                continue
+            if isinstance(candidate, dict) and candidate.get('kind') in ('attachment_file', 'attachment_table'):
+                payload = candidate
+                break
+        if payload is None:
             return None
 
-        try:
-            payload = json.loads(context_message.message)
-        except (TypeError, ValueError):
-            return None
+        if isinstance(payload, dict) and payload.get('kind') == 'attachment_file':
+            return SystemMessage(content=(
+                f'Earlier in this conversation, the user attached a file '
+                f'"{payload.get("filename", "")}" (stored_path="{payload.get("stored_path", "")}"). '
+                'If they now ask to process it (summarize_with_temporal), save it to the knowledge base '
+                '(save_to_knowledge_base) or chart it (CSV/Excel only), use that file.'
+            ))
 
         if not isinstance(payload, dict) or payload.get('kind') != 'attachment_table':
             return None
@@ -140,6 +184,29 @@ class PromptService:
             f'Earlier in this conversation, the user attached a file "{payload.get("filename", "")}" '
             f'with columns {columns} and {row_count} rows. If they now ask for a chart, graph, '
             'plot, or visualization (even without re-attaching the file), call build_chart_from_file.'
+        ))
+
+    @classmethod
+    def _build_document_workflows_reminder(cls, conversation):
+        """A SystemMessage naming this chat's Temporal documents (name + workflow id), so
+        the model knows them on every turn. Their summaries are not repeated here: they
+        live in the workflow and are read with get_document_summary.
+        """
+        from chat.services.chat_documents import workflow_rows
+
+        rows = workflow_rows(conversation)
+        if not rows:
+            return None
+
+        lines = '\n'.join(
+            f'- "{row.get("filename", "")}" (document id {row["document_id"]}, workflow {row["workflow_id"]})'
+            for row in rows
+        )
+        return SystemMessage(content=(
+            'Documents tracked in this chat with Temporal (their summary and knowledge-base status '
+            f'live in the workflow):\n{lines}\n'
+            'For their summary use get_document_summary; "save it to the knowledge base" / "embed '
+            'this" -> save_to_knowledge_base; for tasks (running, pending, failed) use list_document_tasks.'
         ))
 
     @classmethod

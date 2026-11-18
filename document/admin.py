@@ -1,3 +1,6 @@
+import asyncio
+
+from asgiref.sync import async_to_sync
 from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import path, reverse
@@ -13,6 +16,7 @@ from document.models import Chunk, Document, DocumentStatus
 from document.services.document_service import DocumentService
 from document.services.kafka_service import KafkaService
 from document.tasks import process_document_task
+from document.temporal import client as temporal
 
 
 class ChunkInline(TabularInline):
@@ -28,7 +32,7 @@ class DocumentAdmin(AuditableAdminMixin, ModelAdmin):
     list_display = [
         'id', 'title', 'company', 'doc_type', 'status_badge', 'chunk_count',
         'created_by', 'created_at',
-        'process_link', 'process_celery_link', 'process_kafka_link',
+        'process_link', 'process_celery_link', 'process_kafka_link', 'process_temporal_link',
     ]
     list_filter = ['status', 'doc_type']
     search_fields = ['title', 'source_url']
@@ -37,7 +41,10 @@ class DocumentAdmin(AuditableAdminMixin, ModelAdmin):
     fieldsets = (
         ('Details', {
             'classes': ('tab',),
-            'fields': ('title', 'source_url', 'content', 'doc_type', 'status', 'error_message', 'is_active'),
+            'fields': (
+                'title', 'source_url', 'content', 'file', 'doc_type', 'status', 'processing_step',
+                'error_message', 'is_active',
+            ),
         }),
         ('Audit info', {
             'classes': ('tab',),
@@ -47,7 +54,7 @@ class DocumentAdmin(AuditableAdminMixin, ModelAdmin):
             ),
         }),
     )
-    readonly_fields = ['created_at', 'updated_at']
+    readonly_fields = ['file', 'processing_step', 'created_at', 'updated_at']
 
     def get_queryset(self, request):
         self.request = request
@@ -113,6 +120,11 @@ class DocumentAdmin(AuditableAdminMixin, ModelAdmin):
                 name='document_document_process_kafka',
             ),
             path(
+                '<int:object_id>/process-temporal/',
+                self.admin_site.admin_view(require_POST(self.process_document_temporal_view)),
+                name='document_document_process_temporal',
+            ),
+            path(
                 '<int:object_id>/status/',
                 self.admin_site.admin_view(self.document_status_view),
                 name='document_document_status',
@@ -126,10 +138,12 @@ class DocumentAdmin(AuditableAdminMixin, ModelAdmin):
         # data-status-cell -- document_process.js finds and rewrites this element in
         # place (same doc-status-badge--<status> class naming) once a background
         # process finishes, without a page reload.
+        step = f' · {obj.processing_step}' if obj.status == DocumentStatus.PROCESSING and obj.processing_step else ''
         return format_html(
-            '<span data-status-cell class="doc-status-badge doc-status-badge--{}">{}</span>',
+            '<span data-status-cell class="doc-status-badge doc-status-badge--{}">{}{}</span>',
             obj.status,
             obj.get_status_display(),
+            step,
         )
 
     @display(description='Chunks')
@@ -188,6 +202,16 @@ class DocumentAdmin(AuditableAdminMixin, ModelAdmin):
             retry_label='Retry',
         )
 
+    @display(description='Temporal')
+    def process_temporal_link(self, obj):
+        return self._process_button(
+            obj,
+            url_name='admin:document_document_process_temporal',
+            css_variant='temporal',
+            label='Process',
+            retry_label='Retry',
+        )
+
     @display(description='Kafka')
     def process_kafka_link(self, obj):
         return self._process_button(
@@ -240,6 +264,29 @@ class DocumentAdmin(AuditableAdminMixin, ModelAdmin):
         KafkaService.publish_document_processing_event(document.pk, request.user.pk)
         return JsonResponse({'success': True, 'message': 'Document queued for processing.'})
 
+    def process_document_temporal_view(self, request, object_id):
+        document = Document.all_objects.get(pk=object_id)
+
+        if not self._can_manage(request, document):
+            return JsonResponse(
+                {'success': False, 'error': "You don't have permission to process this document."},
+                status=403,
+            )
+
+        if document.status == DocumentStatus.COMPLETED:
+            return JsonResponse({'success': False, 'error': 'This document has already been processed.'}, status=400)
+
+        # Starts the workflow and returns at once; the Temporal worker does the work.
+        # The admin has no chat conversation, so the session id is just "admin".
+        try:
+            async_to_sync(temporal.start_document_workflow)(document, request.user, 'admin')
+        except Exception as exc:
+            return JsonResponse(
+                {'success': False, 'error': f'Could not reach Temporal ({type(exc).__name__}). Is the server running?'},
+                status=503,
+            )
+        return JsonResponse({'success': True, 'message': 'Document sent to Temporal.'})
+
     def document_status_view(self, request, object_id):
         """Polled by document_process.js after a process button is clicked, until the
         document's status leaves PROCESSING (i.e. reaches COMPLETED or FAILED)."""
@@ -248,13 +295,31 @@ class DocumentAdmin(AuditableAdminMixin, ModelAdmin):
         except Document.DoesNotExist:
             return JsonResponse({'success': False, 'error': 'Document not found.'}, status=404)
 
+        # Exact embedded/total comes from the running Temporal workflow. Best-effort only:
+        # documents processed by Celery/Kafka/sync have no workflow, and a workflow with no
+        # worker running can't answer -- both just mean "no progress numbers", not an error.
+        progress = None
+        if document.status == DocumentStatus.PROCESSING:
+            try:
+                progress = async_to_sync(self._query_progress)(document.pk)
+            except Exception:
+                progress = None
+
         return JsonResponse({
             'success': True,
             'status': document.status,
             'status_display': document.get_status_display(),
+            'processing_step': document.processing_step,
+            'embedded': progress['embedded'] if progress else None,
+            'total': progress['total'] if progress else None,
+            'paused': progress['paused'] if progress else False,
             'chunk_count': document.chunks.count(),
             'error_message': document.error_message,
         })
+
+    @staticmethod
+    async def _query_progress(document_id):
+        return await asyncio.wait_for(temporal.query_progress(document_id), timeout=2)
 
 
 @admin.register(Chunk)

@@ -1,9 +1,12 @@
 import json
+import math
+import os
 
 from asgiref.sync import sync_to_async
 from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 
 from agents.graph.builder import WorkflowGraphBuilder
+from agents.models import Agent
 from agents.services.router_service import RouterService
 from chat.models import Message, MessageRole, MessageType
 from chat.services.agent import get_langfuse_handler
@@ -24,6 +27,9 @@ NO_AGENT_AVAILABLE_MESSAGE = (
 # (tools._save_inline_table writes the same shape for pasted data, using the literal
 # string below rather than importing this constant.)
 ATTACHMENT_CONTEXT_KIND = 'attachment_table'
+# Any uploaded file: only its stored path is remembered, not its text or rows.
+ATTACHMENT_FILE_CONTEXT_KIND = 'attachment_file'
+TABULAR_EXTENSIONS = {'.csv', '.xlsx', '.xls'}
 
 # If the user's question contains this phrase (case-insensitive), the agent is given
 # only the conversation's stored summary as context, instead of recent message history.
@@ -34,14 +40,18 @@ USE_SUMMARY_PHRASE = 'use summary'
 class ChatService:
 
     @classmethod
-    async def stream_reply(cls, conversation, company, question, attachment=None):
-        """`attachment`, if given, is {"filename": str, "table": {"columns": [...], "rows": [...]}}
-        for a file just uploaded alongside this turn's question (see
-        AdminChatStreamView.post, which parses it via TableParserService before calling
-        this). It is persisted as a CONTEXT message BEFORE the graph runs (not after),
-        specifically so build_chart_from_file (chat/services/tools.py) can read it back
-        within this very same turn -- a file attached and asked about in one message
-        must not require a second round-trip to "see" it.
+    async def stream_reply(cls, conversation, company, question, attachment=None, agent=None):
+        """`attachment`, if given, is {"filename": str, "stored_path": str} for a file just
+        uploaded alongside this turn's question (see AdminChatStreamView.post, which saves
+        it but does not parse it). Its path is persisted as a CONTEXT message BEFORE the
+        graph runs (not after), so the tools in chat/services/tools.py can find it within
+        this very same turn -- a file attached and asked about in one message must not
+        require a second round-trip to "see" it.
+
+        `agent`, if given, is the Agent that answers this turn and the router is skipped.
+        Otherwise the conversation's own saved agent is used, and only a conversation
+        with neither (a request to the agent-less /chat/stream/ endpoint) falls back to
+        the router.
         """
         if USE_SUMMARY_PHRASE in question.lower():
             history = await sync_to_async(PromptService.build_summary_context)(conversation)
@@ -68,7 +78,14 @@ class ChatService:
         # The router picks which Agent handles THIS message specifically (re-decided on
         # every message, not once per conversation, per the user's explicit choice) --
         # a single conversation can be answered by a different agent turn to turn.
-        chosen_agent = await RouterService.choose_agent(question)
+        chosen_agent = agent
+        if chosen_agent is None and conversation.agent_id:
+            chosen_agent = await Agent.objects.filter(id=conversation.agent_id).afirst()
+        if chosen_agent is not None and conversation.agent_id != chosen_agent.id:
+            conversation.agent = chosen_agent
+            await conversation.asave(update_fields=['agent'])
+        if chosen_agent is None:
+            chosen_agent = await RouterService.choose_agent(question)
         if chosen_agent is None:
             await Message.objects.acreate(
                 company=company,
@@ -120,21 +137,22 @@ class ChatService:
             ):
                 if stream_mode == 'updates':
                     for tool_name, raw_content in cls._tool_end_results(payload):
-                        chart_payload = cls._as_chart_payload(raw_content)
+                        widget = cls._as_widget(raw_content)
 
-                        if chart_payload is not None:
-                            # Full structured chart data, not the usual 200-char text
-                            # preview -- a chart only renders correctly client-side with
-                            # all of its labels/datasets intact, not a truncated string.
+                        if widget is not None:
+                            widget_type, widget_data, widget_payload = widget
+                            # Full structured data, not the usual 200-char text preview --
+                            # a chart or table only renders correctly client-side with all
+                            # of its data intact, not a truncated string.
                             await Message.objects.acreate(
                                 company=company,
                                 conversation=conversation,
                                 role=MessageRole.ASSISTANT,
                                 message_type=MessageType.MEDIA,
                                 tool_name=tool_name,
-                                message=json.dumps(chart_payload),
+                                message=json.dumps(widget_payload),
                             )
-                            yield f'data: {json.dumps({"widget": {"type": "chart", "data": chart_payload["chart"]}})}\n\n'
+                            yield f'data: {json.dumps({"widget": {"type": widget_type, "data": widget_data}})}\n\n'
                             any_tool_used = True
                             continue
 
@@ -154,8 +172,8 @@ class ChatService:
 
                 if not isinstance(message_chunk, AIMessageChunk):
                     continue
-                # Every step's LLM-calling node is named "<node_id>__agent" (see
-                # WorkflowGraphBuilder._agent_node_name) -- unlike the old single fixed
+                # Every step's LLM-calling node is named "<prompt_slug>__agent" (see
+                # WorkflowGraphBuilder._assign_node_names) -- unlike the old single fixed
                 # agent, there's no one node name to check for exact equality anymore.
                 if not (metadata.get('langgraph_node') or '').endswith('__agent'):
                     continue
@@ -181,6 +199,13 @@ class ChatService:
             yield f'data: {json.dumps({"error": error_message})}\n\n'
             return
 
+        if attachment and not any_tool_used:
+            # The assistant just asked what to do with the file: show the options as
+            # buttons. Not saved -- they only make sense for this turn; a click sends the
+            # button's text as a normal message.
+            buttons = cls._upload_action_buttons(attachment['filename'])
+            yield f'data: {json.dumps({"widget": {"type": "actions", "data": {"buttons": buttons}}})}\n\n'
+
         if not any_tool_used:
             await Message.objects.acreate(
                 company=company,
@@ -203,51 +228,55 @@ class ChatService:
 
     @classmethod
     def _persist_attachment_context(cls, company, conversation, attachment):
-        """Persists a just-uploaded file's parsed table as a CONTEXT Message, so it
-        durably survives in this conversation's history (not a cache, per the user's
-        explicit choice) -- reopening this chat tomorrow and asking "chart that again
-        as a line graph" must still work without re-uploading.
+        """Persists a just-uploaded file's stored path as a CONTEXT Message, so it durably
+        survives in this conversation's history (not a cache) -- reopening this chat
+        tomorrow and saying "summarize that file" or "chart that" must still work without
+        re-uploading. Only the path is kept, never the file's text or parsed rows: the
+        tools (summarize_document, build_chart_from_file, process_document) read the
+        stored file themselves, and only when the user actually asks for them.
 
-        Row count is capped at MAX_ROWS_IN_CONTEXT here (not at parse time -- see
-        TableParserService.MAX_ROWS_PARSED, a separate, much larger safety cap) to keep
-        what gets resent into the LLM's context on every later turn in this
-        conversation (PromptService.build_history) bounded, independent of how many
-        rows the file actually had.
+        Written BEFORE the graph runs (not after), so a tool called within this very same
+        turn can already find it.
 
-        Returns a short string to use as this turn's own system hint (steering tool
-        selection toward build_chart_from_file when appropriate) -- kept separate from
-        what gets persisted, since the persisted CONTEXT row is replayed verbatim on
-        every later turn, while this hint is relevant only to the turn the file was
-        just attached on.
+        Returns a short string to use as this turn's own system hint, kept separate from
+        what gets persisted since the persisted CONTEXT row is replayed on every later
+        turn (see PromptService._build_attachment_reminder), while this hint is relevant
+        only to the turn the file was just attached on.
         """
-        from chat.services.chart_service import MAX_ROWS_IN_CONTEXT
-
-        table = attachment['table']
         filename = attachment['filename']
-        capped_rows = table['rows'][:MAX_ROWS_IN_CONTEXT]
-        was_capped = len(table['rows']) > MAX_ROWS_IN_CONTEXT
-
-        payload = {
-            'kind': ATTACHMENT_CONTEXT_KIND,
-            'filename': filename,
-            'table': {'columns': table['columns'], 'rows': capped_rows},
-            'row_count': len(table['rows']),
-        }
+        stored_path = attachment['stored_path']
 
         Message.objects.create(
             company=company,
             conversation=conversation,
             role=MessageRole.ASSISTANT,
             message_type=MessageType.CONTEXT,
-            message=json.dumps(payload),
+            message=json.dumps({
+                'kind': ATTACHMENT_FILE_CONTEXT_KIND,
+                'filename': filename,
+                'stored_path': stored_path,
+            }),
+            # Lets the admin list every chat upload and open the file (chat/admin.py).
+            media=stored_path,
+            created_by_id=conversation.user_id,
         )
 
-        row_note = f'{len(table["rows"])} rows' + (f' (showing first {MAX_ROWS_IN_CONTEXT})' if was_capped else '')
+        is_tabular = os.path.splitext(filename)[1].lower() in TABULAR_EXTENSIONS
+        attached = f'The user just attached a file "{filename}" (stored_path="{stored_path}").'
+        if is_tabular:
+            return (
+                f'{attached} If their message does not already say what they want, ask: '
+                '"What would you like me to do with this file? I can create a chart from it." '
+                'CSV/Excel files can only be charted (build_chart_from_file). Do not guess.'
+            )
         return (
-            f'The user just attached a file "{filename}" with columns '
-            f'{table["columns"]} and {row_note}. If the user wants a chart, graph, '
-            'plot, or visualization of this data, call build_chart_from_file -- pass a '
-            'chart_type only if they explicitly named one (bar/line/pie/scatter).'
+            f'{attached} If their message does not already say what they want, ask exactly this, '
+            'and nothing more: "What would you like me to do with this file? '
+            '1. Process it (I will summarise it and keep the summary in this chat) '
+            '2. Save it to the knowledge base". '
+            'Meaning: "process it" -> summarize_with_temporal; "save it to the knowledge base" / '
+            '"save this document" / "embed this" -> save_to_knowledge_base (it also summarises). '
+            'Buttons for these two options are shown to the user automatically. Do not guess, and do not offer other options.'
         )
 
     @classmethod
@@ -280,7 +309,7 @@ class ChatService:
 
         `updates_payload` is the dict LangGraph's `stream_mode="updates"` yields for this
         step: `{node_name: {"messages": [...]}}`. Every step's tool-executing node is
-        named "<node_id>__tools" (see WorkflowGraphBuilder._tools_node_name) -- we don't
+        named "<prompt_slug>__tools" (see WorkflowGraphBuilder._assign_node_names) -- we don't
         care which specific step it came from here, just that it's a tools node.
         """
         for node_name, node_output in updates_payload.items():
@@ -294,6 +323,52 @@ class ChatService:
                 content = message.content if isinstance(message.content, str) else str(message.content)
 
                 yield message.name, content
+
+    @classmethod
+    def _upload_action_buttons(cls, filename):
+        """The options offered right after a file is attached. Each `text` is sent as the
+        user's next message."""
+        if os.path.splitext(filename)[1].lower() in TABULAR_EXTENSIONS:
+            return [{'label': 'Create a chart', 'text': 'Create a chart from this file', 'style': 'primary'}]
+        return [
+            {'label': 'Process it', 'text': 'Process this document', 'style': 'primary'},
+            {'label': 'Save to knowledge base', 'text': 'Save this document to the knowledge base', 'style': 'success'},
+        ]
+
+    @classmethod
+    def _as_widget(cls, raw_content):
+        """(widget_type, widget_data, payload_to_persist) if `raw_content` is the JSON of a
+        tool that renders as a widget, else None for every other tool's plain text:
+        build_chart_from_file ("chart" key) or list_document_tasks ("table" key). A plain
+        `json.loads` that happens to succeed on unrelated text is not enough.
+        """
+        try:
+            parsed = json.loads(raw_content)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        if 'chart' in parsed:
+            parsed = cls._json_safe(parsed)
+            return 'chart', parsed['chart'], parsed
+        if 'table' in parsed:
+            # The note is for the model only; it is not part of what the UI stores.
+            parsed = cls._json_safe(parsed)
+            return 'task_table', parsed['table'], {'table': parsed['table']}
+        return None
+
+    @classmethod
+    def _json_safe(cls, value):
+        """Replaces float NaN / infinity with None, recursively. Python's json happily
+        writes them as NaN/Infinity, which browsers cannot parse -- one stray NaN would
+        break the whole widget."""
+        if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+            return None
+        if isinstance(value, dict):
+            return {key: cls._json_safe(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [cls._json_safe(item) for item in value]
+        return value
 
     @staticmethod
     def _as_chart_payload(raw_content):

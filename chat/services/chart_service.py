@@ -1,3 +1,7 @@
+import math
+
+import pandas as pd
+
 MAX_ROWS_IN_CONTEXT = 200  # how many rows get persisted into the conversation's CONTEXT
                             # message (chat_service.py) -- keeps the prompt/history
                             # bounded; unrelated to TableParserService.MAX_ROWS_PARSED,
@@ -96,8 +100,18 @@ class ChartService:
         return numeric_columns, label_column
 
     @staticmethod
-    def _column_is_numeric(column, rows):
-        sample = [row.get(column) for row in rows[:50] if row.get(column) is not None]
+    def _missing(value):
+        """True for None and for float NaN / infinity (not valid JSON)."""
+        if value is None:
+            return True
+        try:
+            return bool(pd.isna(value)) or (isinstance(value, float) and math.isinf(value))
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def _column_is_numeric(cls, column, rows):
+        sample = [row.get(column) for row in rows[:50] if not cls._missing(row.get(column))]
         if not sample:
             return False
         for value in sample:
@@ -111,23 +125,25 @@ class ChartService:
                 return False
         return True
 
-    @staticmethod
-    def _to_number(value):
-        if value is None:
+    @classmethod
+    def _to_number(cls, value):
+        # A gap in the data is None (a gap in the chart), never NaN.
+        if cls._missing(value):
             return None
         if isinstance(value, (int, float)):
             return value
         try:
-            return float(value)
+            number = float(value)
         except (TypeError, ValueError):
             return None
+        return None if cls._missing(number) else number
 
-    @staticmethod
-    def _label_for_row(row, label_column, index):
+    @classmethod
+    def _label_for_row(cls, row, label_column, index):
         if label_column is None:
             return str(index + 1)
         value = row.get(label_column)
-        return str(value) if value is not None else str(index + 1)
+        return str(index + 1) if cls._missing(value) else str(value)
 
     @classmethod
     def _auto_pick_chart_type(cls, numeric_columns, rows):

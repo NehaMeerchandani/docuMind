@@ -42,6 +42,22 @@ document.addEventListener('DOMContentLoaded', function () {
     }, 4000);
   }
 
+  // "Processing", or while running: "Processing · embedding 60/100" / "· paused".
+  // embedded/total only exist for Temporal-run documents; others just show the step.
+  function describeStatus(body) {
+    if (body.status !== 'processing' || !body.processing_step) {
+      return body.status_display;
+    }
+    let text = body.status_display + ' · ' + body.processing_step;
+    if (body.total) {
+      text += ' ' + body.embedded + '/' + body.total;
+    }
+    if (body.paused) {
+      text += ' (paused)';
+    }
+    return text;
+  }
+
   function pollStatus(button, statusUrl) {
     fetch(statusUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (response) {
@@ -56,7 +72,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const statusCell = findStatusCell(button);
 
         if (statusCell) {
-          statusCell.textContent = body.status_display;
+          statusCell.textContent = describeStatus(body);
           statusCell.className = 'doc-status-badge doc-status-badge--' + body.status;
         }
 

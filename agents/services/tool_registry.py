@@ -1,7 +1,19 @@
+from chat.services.chat_document_tools import (
+    make_get_document_summary_tool,
+    make_list_document_tasks_tool,
+    make_save_to_knowledge_base_tool,
+    make_summarize_with_temporal_tool,
+)
+from chat.services.document_process_tools import (
+    make_control_document_processing_tool,
+    make_get_document_status_tool,
+    make_process_document_tool,
+)
 from chat.services.tools import (
     make_build_chart_from_file_tool,
     make_list_document_process_tool,
     make_search_documents_tool,
+    make_summarize_document_tool,
     make_summarize_session_tool,
 )
 
@@ -34,9 +46,48 @@ class ToolRegistry:
             'label': 'Summarize this conversation',
             'build': lambda company_id, conversation: make_summarize_session_tool(conversation),
         },
+        # Summarizes an attached PDF/DOCX/TXT/MD directly with the LLM (no table parser,
+        # no Document row, no embedding). Needs the conversation to find the attachment.
+        'summarize_document': {
+            'label': 'Summarize an attached document',
+            'build': lambda company_id, conversation: make_summarize_document_tool(conversation),
+        },
+        # Temporal-backed document processing. process/control need the conversation (the
+        # user, the session id, attached files); status only needs the company.
+        'process_document': {
+            'label': 'Process a document (Temporal)',
+            'build': lambda company_id, conversation: make_process_document_tool(company_id, conversation),
+        },
+        'get_document_status': {
+            'label': 'Get a document\'s processing status',
+            'build': lambda company_id, conversation: make_get_document_status_tool(company_id),
+        },
+        'control_document_processing': {
+            'label': 'Pause / resume / cancel document processing',
+            'build': lambda company_id, conversation: make_control_document_processing_tool(company_id, conversation),
+        },
         'list_document_process': {
             'label': 'List document processing status',
-            'build': lambda company_id, conversation: make_list_document_process_tool(company_id),
+            'build': lambda company_id, conversation: make_list_document_process_tool(company_id, conversation),
+        },
+        # Chat-level Temporal documents: the summary lives in a long-running workflow whose
+        # id the chat remembers; saving to the knowledge base reuses the processing workflow.
+        'summarize_with_temporal': {
+            'label': 'Summarize an attached document (Temporal, kept in chat)',
+            'build': lambda company_id, conversation: make_summarize_with_temporal_tool(company_id, conversation),
+        },
+        # The task table (own documents by default) with a button per action.
+        'list_document_tasks': {
+            'label': 'Show my document tasks (table with actions)',
+            'build': lambda company_id, conversation: make_list_document_tasks_tool(company_id, conversation),
+        },
+        'get_document_summary': {
+            'label': 'Show a document\'s saved summary',
+            'build': lambda company_id, conversation: make_get_document_summary_tool(company_id, conversation),
+        },
+        'save_to_knowledge_base': {
+            'label': 'Save a document to the knowledge base',
+            'build': lambda company_id, conversation: make_save_to_knowledge_base_tool(company_id, conversation),
         },
         # Charts tabular data from an attached CSV/Excel file or from data pasted into
         # the message. Like summarize_session it needs the conversation (to find the

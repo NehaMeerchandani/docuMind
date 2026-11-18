@@ -9,11 +9,13 @@ class DocumentType:
     WEBPAGE = 'webpage'
     PDF = 'pdf'
     TEXT = 'text'
+    DOCX = 'docx'
 
     CHOICES = (
         (WEBPAGE, 'Webpage'),
         (PDF, 'PDF'),
         (TEXT, 'Text'),
+        (DOCX, 'DOCX'),
     )
 
 
@@ -49,6 +51,11 @@ class Document(CompanyBaseModel):
     doc_type = models.CharField(max_length=20, choices=DocumentType.CHOICES, blank=True)
     status = models.CharField(max_length=20, choices=DocumentStatus.CHOICES, default=DocumentStatus.PENDING)
     error_message = models.TextField(blank=True)
+    # Path (relative to MEDIA_ROOT) of a file uploaded through chat. Reference only --
+    # the text lives in the chunks, not here.
+    file = models.FileField(upload_to='chat_uploads/', max_length=255, blank=True)
+    # Fine-grained progress inside `status=PROCESSING` (e.g. "parsing", "embedding").
+    processing_step = models.CharField(max_length=30, blank=True)
 
     objects = DocumentManager()
 

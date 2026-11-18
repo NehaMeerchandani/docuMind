@@ -1,4 +1,5 @@
 from django.db import models
+from django.utils.text import slugify
 
 from base.models import BaseModel
 
@@ -38,6 +39,15 @@ class Agent(BaseModel):
     """
 
     name = models.CharField(max_length=255, unique=True)
+    slug = models.SlugField(
+        max_length=255,
+        unique=True,
+        editable=False,
+        help_text=(
+            "URL-safe form of `name`, generated automatically. It identifies this agent in "
+            "its chat endpoint (/chat/agents/<slug>/stream/)."
+        ),
+    )
     description = models.TextField(
         blank=True,
         help_text=(
@@ -52,3 +62,16 @@ class Agent(BaseModel):
 
     def __str__(self):
         return self.name
+
+    @staticmethod
+    def slug_for(name):
+        return slugify(name)[:255]
+
+    def save(self, *args, **kwargs):
+        # Slug always follows the name, so the endpoint, the agent and its prompt slug
+        # never drift apart.
+        self.slug = self.slug_for(self.name)
+        update_fields = kwargs.get('update_fields')
+        if update_fields is not None and 'name' in update_fields:
+            kwargs['update_fields'] = {*update_fields, 'slug'}
+        super().save(*args, **kwargs)

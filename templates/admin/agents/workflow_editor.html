@@ -5,8 +5,8 @@
 
 {% block extrahead %}
   {{ block.super }}
-  <link rel="stylesheet" href="{% static 'admin/css/workflow_editor.css' %}">
-  <script src="{% static 'admin/js/workflow_editor.js' %}" defer></script>
+  <link rel="stylesheet" href="{% static 'admin/css/workflow_editor.css' %}?v=2">
+  <script src="{% static 'admin/js/workflow_editor.js' %}?v=2" defer></script>
 {% endblock %}
 
 {% block content %}
@@ -34,14 +34,15 @@
 
       <div class="workflow-toolbar-group workflow-toolbar-group--grow">
         <label for="agent-name">Name:</label>
-        <input type="text" id="agent-name" placeholder="Agent name (used as its unique identifier)">
+        <input type="text" id="agent-name" placeholder="Agent name (its slug is also its prompt name and API endpoint)">
         <label for="agent-description">Description:</label>
-        <input type="text" id="agent-description" placeholder="Shown to the router -- when should this agent be picked?">
+        <input type="text" id="agent-description" placeholder="What this agent is for (the router uses it when no agent is chosen)">
       </div>
 
       <button id="btn-add-node" type="button" class="workflow-btn">+ Add Node</button>
     </div>
 
+    <div id="agent-endpoint" class="workflow-status"></div>
     <div id="workflow-status" class="workflow-status"></div>
 
     <div id="workflow-canvas" class="workflow-canvas">

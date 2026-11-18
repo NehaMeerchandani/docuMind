@@ -49,12 +49,10 @@ class TableParserService:
             )
 
         dataframe = dataframe.head(MAX_ROWS_PARSED)
-        # NaN/NaT are not JSON-serializable by the stdlib json module used elsewhere
-        # in this codebase (ChatService emits SSE via json.dumps) -- normalize to None.
-        dataframe = dataframe.where(pd.notnull(dataframe), None)
-
+        # NaN/NaT are not valid JSON (ChatService emits SSE via json.dumps) -- _records
+        # turns them into None.
         columns = [str(col) for col in dataframe.columns]
-        rows = dataframe.to_dict(orient='records')
+        rows = cls._records(dataframe)
 
         return {'columns': columns, 'rows': rows}
 
@@ -84,12 +82,25 @@ class TableParserService:
             )
 
         dataframe = dataframe.head(MAX_ROWS_PARSED)
-        dataframe = dataframe.where(pd.notnull(dataframe), None)
 
         return {
             'columns': [str(col) for col in dataframe.columns],
-            'rows': dataframe.to_dict(orient='records'),
+            'rows': cls._records(dataframe),
         }
+
+    @staticmethod
+    def _records(dataframe):
+        """Rows as dicts with every missing cell (NaN / NaT / pd.NA) as None.
+
+        `dataframe.where(notnull, None)` is NOT enough: on a float column pandas keeps NaN
+        (it only turns it into None for object columns), and NaN is not valid JSON, so the
+        browser failed to read the chart ("Unexpected token 'N' ... is not valid JSON").
+        Cleaning the finished records works for every dtype.
+        """
+        return [
+            {key: (None if pd.isna(value) else value) for key, value in record.items()}
+            for record in dataframe.to_dict(orient='records')
+        ]
 
     @classmethod
     def _read_excel(cls, raw_bytes):

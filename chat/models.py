@@ -52,6 +52,14 @@ class Conversation(CompanyBaseModel):
         on_delete=models.CASCADE,
         related_name='conversations',
     )
+    agent = models.ForeignKey(
+        'agents.Agent',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='conversations',
+        help_text='The agent this conversation belongs to; every turn is answered by it.',
+    )
     title = models.CharField(max_length=255, blank=True)
     summary = models.TextField(
         blank=True,
@@ -77,6 +85,9 @@ class Message(CompanyBaseModel):
     message_type = models.CharField(max_length=20, choices=MessageType.CHOICES, default=MessageType.TEXT)
     message = models.TextField(blank=True)
     tool_name = models.CharField(max_length=100, blank=True)
+    # File uploaded in chat (path relative to MEDIA_ROOT, same value as the attachment's
+    # stored_path). Reference only; shown in the admin.
+    media = models.FileField(upload_to='chat_uploads/', max_length=255, blank=True)
 
     class Meta:
         ordering = ['created_at']

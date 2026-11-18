@@ -10,10 +10,11 @@
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
-  padding: 12px;
+  padding: 12px 16px;
   border: 1px solid #e5e7eb;
-  border-radius: 8px;
+  border-radius: 14px;
   background: #fff;
+  box-shadow: 0 1px 3px rgba(17, 24, 39, 0.06);
   margin-bottom: 10px;
 }
 html.dark .workflow-toolbar {
@@ -43,11 +44,31 @@ html.dark .workflow-toolbar-group label {
 .workflow-toolbar select,
 .workflow-toolbar input[type="text"] {
   font-size: 13px;
-  padding: 6px 8px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  background: #fff;
+  padding: 7px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f9fafb;
   color: #111827;
+  outline: none;
+}
+.workflow-toolbar select:focus,
+.workflow-toolbar input[type="text"]:focus {
+  border-color: rgb(167 139 250);
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.25);
+}
+/* One arrow of our own: the admin theme paints a second one over the native arrow. */
+.workflow-toolbar select,
+.workflow-node-field select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  padding-right: 28px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 12px;
+  cursor: pointer;
 }
 .workflow-toolbar-group--grow input[type="text"] {
   flex: 1;
@@ -61,19 +82,31 @@ html.dark .workflow-toolbar input[type="text"] {
 }
 
 .workflow-btn {
-  background: #6b7280;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
+  background: #f3f4f6;
+  color: #374151;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
   padding: 7px 14px;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
+  transition: background 0.12s, box-shadow 0.12s;
 }
-.workflow-btn:hover { background: #4b5563; }
-.workflow-btn--primary { background: rgb(37 99 235); }
-.workflow-btn--primary:hover { background: rgb(29 78 216); }
+.workflow-btn:hover { background: #e5e7eb; }
+.workflow-btn--primary {
+  background: linear-gradient(135deg, rgb(147 51 234), rgb(109 40 217));
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(124, 58, 237, 0.3);
+}
+.workflow-btn--primary:hover {
+  background: linear-gradient(135deg, rgb(147 51 234), rgb(109 40 217));
+  box-shadow: 0 4px 12px rgba(124, 58, 237, 0.4);
+}
+html.dark .workflow-btn { background: #1f2937; border-color: #374151; color: #e5e7eb; }
+html.dark .workflow-btn:hover { background: #374151; }
+html.dark .workflow-btn--primary { background: linear-gradient(135deg, rgb(147 51 234), rgb(109 40 217)); color: #fff; }
 
 .workflow-status {
   min-height: 20px;
@@ -83,13 +116,15 @@ html.dark .workflow-toolbar input[type="text"] {
 }
 .workflow-status.success { color: #15803d; }
 .workflow-status.error { color: #b91c1c; }
+.workflow-status.warn { color: #b45309; }
+#agent-endpoint { font-family: monospace; color: #6b7280; margin-bottom: 0; }
 
 .workflow-canvas {
   position: relative;
   flex: 1;
   overflow: auto;
   border: 1px solid #e5e7eb;
-  border-radius: 8px;
+  border-radius: 14px;
   background-color: #0b1120;
   background-image: radial-gradient(circle, #33415580 1px, transparent 1px);
   background-size: 20px 20px;
@@ -105,12 +140,12 @@ html.dark .workflow-toolbar input[type="text"] {
 }
 .workflow-edge-path {
   fill: none;
-  stroke: #9ca3af;
-  stroke-width: 2;
+  stroke: #a78bfa;
+  stroke-width: 2.5;
   pointer-events: stroke;
   cursor: pointer;
 }
-.workflow-edge-path:hover { stroke: #60a5fa; }
+.workflow-edge-path:hover { stroke: #f0abfc; }
 .workflow-edge-label {
   fill: #d1d5db;
   font-size: 10px;
@@ -132,20 +167,52 @@ html.dark .workflow-toolbar input[type="text"] {
 }
 
 .workflow-node {
+  --node-accent: #8b5cf6;
   position: absolute;
   width: 260px;
   background: #131c31;
   border: 1px solid #334155;
-  border-radius: 8px;
-  padding: 12px;
+  border-top: 3px solid var(--node-accent);
+  border-radius: 12px;
+  padding: 0 12px 12px;
   color: #e5e7eb;
   font-size: 12px;
   cursor: grab;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
   user-select: none;
 }
+.workflow-node--start { --node-accent: #10b981; }
+.workflow-node--step { --node-accent: #8b5cf6; }
+.workflow-node--end { --node-accent: #f43f5e; }
+.workflow-node-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 22px 10px 0;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #1f2a44;
+}
+.workflow-node-badge {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #fff;
+  background: var(--node-accent);
+}
+.workflow-node-title {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #f3f4f6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .workflow-node.dragging { cursor: grabbing; box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5); }
-.workflow-node.selected { border-color: rgb(37 99 235); }
+.workflow-node.selected { border-color: rgb(139 92 246); }
 
 .workflow-node-field { margin-bottom: 8px; }
 .workflow-node-field:last-child { margin-bottom: 0; }
@@ -163,15 +230,22 @@ html.dark .workflow-toolbar input[type="text"] {
   font-size: 12px;
   padding: 5px 6px;
   border: 1px solid #334155;
-  border-radius: 4px;
+  border-radius: 6px;
   background: #0f172a;
   color: #e5e7eb;
+  outline: none;
 }
+.workflow-node-field select:focus,
+.workflow-node-field input[type="text"]:focus { border-color: #8b5cf6; }
+.workflow-input--warn { border-color: #f59e0b !important; }
+.workflow-prompt-note { margin-top: 4px; font-size: 11px; line-height: 1.4; }
+.workflow-prompt-note--ok { color: #34d399; }
+.workflow-prompt-note--missing { color: #fbbf24; }
 
 .workflow-node-remove {
   position: absolute;
-  top: 4px;
-  right: 6px;
+  top: 9px;
+  right: 8px;
   background: none;
   border: none;
   color: #6b7280;
@@ -212,16 +286,16 @@ html.dark .workflow-toolbar input[type="text"] {
   display: flex;
   align-items: center;
   gap: 4px;
-  background: #1e3a8a;
-  color: #bfdbfe;
-  border-radius: 4px;
-  padding: 2px 6px;
+  background: #2e1065;
+  color: #ddd6fe;
+  border-radius: 999px;
+  padding: 3px 9px;
   font-size: 11px;
 }
 .workflow-tool-chip button {
   background: none;
   border: none;
-  color: #bfdbfe;
+  color: #ddd6fe;
   cursor: pointer;
   font-size: 12px;
   line-height: 1;

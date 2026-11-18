@@ -1,8 +1,11 @@
 import json
 
+from urllib.parse import parse_qs
+
 from asgiref.sync import sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
+from agents.models import Agent
 from base.active_company import get_available_companies
 from chat.models import Conversation
 from chat.services.chat_service import ChatService
@@ -57,9 +60,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return
 
         self.user = user
+
+        query = parse_qs(self.scope.get('query_string', b'').decode())
+        agent_slug = (query.get('agent') or [None])[0]
+        self.agent = None
+        if agent_slug:
+            self.agent = await Agent.objects.filter(slug=agent_slug, is_active=True).afirst()
+            if self.agent is None:
+                await self.close(code=4404)  # unknown agent
+                return
+
         self.conversation = await self._get_or_create_conversation()
         if self.conversation is None:
             await self.close(code=4404)  # session_id belongs to a different user
+            return
+        if self.agent is not None and self.conversation.agent_id not in (None, self.agent.id):
+            await self.close(code=4409)  # conversation belongs to a different agent
             return
 
         self.user_group_name = f'user_{self.user.id}'
@@ -82,7 +98,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.send(text_data=json.dumps({'error': 'question is required.'}))
             return
 
-        async for sse_chunk in ChatService.stream_reply(self.conversation, self.company, question):
+        async for sse_chunk in ChatService.stream_reply(
+            self.conversation, self.company, question, agent=self.agent,
+        ):
             await self._forward_sse_chunk(sse_chunk)
 
     async def _forward_sse_chunk(self, sse_chunk):
@@ -124,7 +142,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
     def _get_or_create_conversation(self):
         conversation, _created = Conversation.objects.get_or_create(
             session_id=self.session_id,
-            defaults={'company': self.company, 'user': self.user, 'created_by': self.user},
+            defaults={
+                'company': self.company, 'user': self.user, 'created_by': self.user,
+                'agent': self.agent,
+            },
         )
         if conversation.user_id != self.user.id:
             return None

@@ -10,7 +10,9 @@ class MessageSerializer(serializers.ModelSerializer):
 
 
 class ConversationSerializer(serializers.ModelSerializer):
+    agent = serializers.SlugRelatedField(slug_field='slug', read_only=True)
+
     class Meta:
         model = Conversation
-        fields = ['session_id', 'title', 'summary', 'created_at', 'updated_at']
-        read_only_fields = ['session_id', 'title', 'summary', 'created_at', 'updated_at']
+        fields = ['session_id', 'agent', 'title', 'summary', 'created_at', 'updated_at']
+        read_only_fields = ['session_id', 'agent', 'title', 'summary', 'created_at', 'updated_at']

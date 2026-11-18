@@ -7,6 +7,7 @@ document.addEventListener('DOMContentLoaded', function () {
   const agentSelect = document.getElementById('agent-select');
   const nameInput = document.getElementById('agent-name');
   const descriptionInput = document.getElementById('agent-description');
+  const endpointEl = document.getElementById('agent-endpoint');
   const statusEl = document.getElementById('workflow-status');
   const canvasEl = document.getElementById('workflow-canvas');
   const nodesLayer = document.getElementById('workflow-nodes');
@@ -21,14 +22,55 @@ document.addEventListener('DOMContentLoaded', function () {
   let nodes = [];
   let edges = [];
   let nextId = 1;
+  // The slug last pushed into a lone step's prompt-slug field automatically, so a later
+  // rename only overwrites a value this editor wrote itself, never one typed by hand.
+  let lastAutoSlug = '';
+  // {prompt slug: true/false/null} from the server -- whether each step's prompt exists in
+  // Langfuse (null = unknown). Refreshed on load and save; a slug edited since then has no
+  // entry, so it shows no badge until the next save.
+  let promptStatus = {};
 
   function newId(prefix) {
     return prefix + '-' + (nextId++) + '-' + Date.now().toString(36);
   }
 
-  function showStatus(message, isError) {
+  // Mirrors Agent.slug_for (agents/models.py), which is what the server actually saves.
+  function slugify(text) {
+    return text
+      .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase().trim()
+      .replace(/[^a-z0-9\s_-]/g, '')
+      .replace(/[\s_-]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+
+  function showEndpoint(slug) {
+    endpointEl.textContent = slug
+      ? 'API endpoint: POST /chat/agents/' + slug + '/stream/'
+      : 'API endpoint: set a name to get one.';
+  }
+
+  // Keeps the agent's name and its prompt slug the same: when the workflow has exactly
+  // one step and that step's slug is blank or was auto-filled, it follows the agent name.
+  function syncStepSlugWithName() {
+    const slug = slugify(nameInput.value);
+    const steps = nodes.filter(function (node) { return node.type === 'step'; });
+    if (steps.length === 1) {
+      const current = steps[0].data.name || '';
+      if (current === '' || current === lastAutoSlug) {
+        steps[0].data.name = slug;
+        render();
+      }
+    }
+    lastAutoSlug = slug;
+    showEndpoint(slug);
+  }
+
+  nameInput.addEventListener('input', syncStepSlugWithName);
+
+  function showStatus(message, isError, isWarning) {
     statusEl.textContent = message;
-    statusEl.className = 'workflow-status ' + (isError ? 'error' : 'success');
+    statusEl.className = 'workflow-status ' + (isError ? 'error' : (isWarning ? 'warn' : 'success'));
   }
 
   function toolLabel(toolId) {
@@ -40,6 +82,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function resetToBlank() {
     currentAgentId = null;
+    lastAutoSlug = '';
+    promptStatus = {};
+    showEndpoint('');
     nameInput.value = '';
     descriptionInput.value = '';
     nodes = [
@@ -76,6 +121,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     currentAgentId = body.data.id;
     nameInput.value = body.data.name;
+    promptStatus = body.data.prompt_status || {};
+    lastAutoSlug = body.data.slug || slugify(body.data.name);
+    showEndpoint(body.data.slug);
     descriptionInput.value = body.data.description || '';
 
     const workflow = body.data.workflow_json || {};
@@ -140,7 +188,19 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     currentAgentId = body.data.id;
-    showStatus('Saved.', false);
+    showEndpoint(body.data.slug);
+    promptStatus = body.data.prompt_status || {};
+    render();
+    const missing = Object.keys(promptStatus).filter(function (slug) { return promptStatus[slug] === false; });
+    if (missing.length) {
+      showStatus(
+        'Saved, but these prompts were not found in Langfuse, so the built-in fallback prompt '
+        + 'will be used: ' + missing.join(', ') + '. Check the spelling.',
+        false, true,
+      );
+    } else {
+      showStatus('Saved.', false);
+    }
     loadAgentOptions();
   }
 
@@ -149,12 +209,17 @@ document.addEventListener('DOMContentLoaded', function () {
   function addNode() {
     const hasStart = nodes.some(function (node) { return node.type === 'start'; });
     const offset = nodes.length * 30;
+    const isFirstStep = hasStart && !nodes.some(function (node) { return node.type === 'step'; });
+    const agentSlug = slugify(nameInput.value);
+    if (isFirstStep && agentSlug) {
+      lastAutoSlug = agentSlug;
+    }
 
     nodes.push({
       id: newId('node'),
       type: hasStart ? 'step' : 'start',
       position: { x: 60 + offset, y: 140 + offset },
-      data: {},
+      data: isFirstStep && agentSlug ? { name: agentSlug } : {},
     });
     render();
   }
@@ -192,10 +257,23 @@ document.addEventListener('DOMContentLoaded', function () {
 
     nodes.forEach(function (node) {
       const el = document.createElement('div');
-      el.className = 'workflow-node';
+      el.className = 'workflow-node workflow-node--' + node.type;
       el.style.left = node.position.x + 'px';
       el.style.top = node.position.y + 'px';
       el.dataset.nodeId = node.id;
+
+      const header = document.createElement('div');
+      header.className = 'workflow-node-header';
+
+      const badge = document.createElement('span');
+      badge.className = 'workflow-node-badge';
+      badge.textContent = node.type.toUpperCase();
+      header.appendChild(badge);
+
+      const title = document.createElement('span');
+      title.className = 'workflow-node-title';
+      title.textContent = nodeTitle(node);
+      header.appendChild(title);
 
       const removeBtn = document.createElement('button');
       removeBtn.type = 'button';
@@ -206,12 +284,13 @@ document.addEventListener('DOMContentLoaded', function () {
         event.stopPropagation();
         removeNode(node.id);
       });
-      el.appendChild(removeBtn);
+      header.appendChild(removeBtn);
+      el.appendChild(header);
 
       el.appendChild(buildTypeField(node));
 
       if (node.type === 'step') {
-        el.appendChild(buildNameField(node));
+        el.appendChild(buildNameField(node, title));
         el.appendChild(buildToolsField(node));
       }
 
@@ -245,6 +324,12 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
+  function nodeTitle(node) {
+    if (node.type === 'start') return 'Start';
+    if (node.type === 'end') return 'End';
+    return (node.data && node.data.name) || 'Untitled step';
+  }
+
   function buildTypeField(node) {
     const wrapper = document.createElement('div');
     wrapper.className = 'workflow-node-field';
@@ -269,7 +354,7 @@ document.addEventListener('DOMContentLoaded', function () {
     return wrapper;
   }
 
-  function buildNameField(node) {
+  function buildNameField(node, titleEl) {
     const wrapper = document.createElement('div');
     wrapper.className = 'workflow-node-field';
 
@@ -283,8 +368,27 @@ document.addEventListener('DOMContentLoaded', function () {
     input.value = node.data.name || '';
     input.addEventListener('input', function () {
       node.data.name = input.value;
+      titleEl.textContent = nodeTitle(node);
+      // The server's verdict was for the old slug; drop the badge instead of showing a stale one.
+      const note = wrapper.querySelector('.workflow-prompt-note');
+      if (note) note.remove();
+      input.classList.remove('workflow-input--warn');
     });
     wrapper.appendChild(input);
+
+    const status = promptStatus[node.data.name];
+    if (status === false) {
+      input.classList.add('workflow-input--warn');
+      const note = document.createElement('div');
+      note.className = 'workflow-prompt-note workflow-prompt-note--missing';
+      note.textContent = 'Not found in Langfuse \u2014 the fallback prompt is being used. Check the spelling.';
+      wrapper.appendChild(note);
+    } else if (status === true) {
+      const note = document.createElement('div');
+      note.className = 'workflow-prompt-note workflow-prompt-note--ok';
+      note.textContent = '\u2713 Found in Langfuse';
+      wrapper.appendChild(note);
+    }
 
     return wrapper;
   }
@@ -365,7 +469,10 @@ document.addEventListener('DOMContentLoaded', function () {
   function portPosition(nodeId, portType) {
     const node = nodeById(nodeId);
     if (!node) return { x: 0, y: 0 };
-    const height = estimateNodeHeight(node);
+    // Real rendered height when the node is on screen, so edges meet the ports exactly;
+    // the estimate only covers the moment before first render.
+    const el = nodesLayer.querySelector('[data-node-id="' + nodeId + '"]');
+    const height = el ? el.offsetHeight : estimateNodeHeight(node);
     return {
       x: node.position.x + (portType === 'out' ? NODE_WIDTH : 0),
       y: node.position.y + height / 2,

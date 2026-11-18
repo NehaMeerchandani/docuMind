@@ -303,6 +303,12 @@ Requires the Kafka broker (#4) to be up first. Run in its own terminal, leave it
 running:
 ```bash
 venv/bin/python manage.py consume_document_processing
+
+# 8. Temporal dev server (project root me chalao) -- section 8 dekho
+temporal server start-dev --db-filename temporal.db --search-attribute DocumentId=Int --search-attribute SessionId=Keyword --search-attribute UploadedBy=Keyword --search-attribute ProcessingStep=Keyword
+
+# 9. Temporal worker (naya terminal, project root me)
+venv/bin/python manage.py run_temporal_worker
 ```
 
 Confirms it's ready when you see:
@@ -384,6 +390,50 @@ docker run -d --name docuMind-kafka --hostname kafka --network documind-net -p 9
 
 
 
+
+## 8. Temporal (durable workflows for document processing)
+
+Runs **natively** (no Docker for now) using the Temporal CLI's dev server. History is
+kept in a SQLite file, so restarting the server does not lose workflow state.
+
+### One-time install
+```bash
+curl -sSf https://temporal.download/cli.sh | sh
+echo 'export PATH="$PATH:$HOME/.temporalio/bin"' >> ~/.bashrc && source ~/.bashrc
+temporal --version
+```
+
+### Start the server (own terminal, keep it running)
+Run from the project root so `temporal.db` lands next to `manage.py` (it is git-ignored).
+Search attributes are registered here so the UI can filter/search workflows:
+```bash
+temporal server start-dev --db-filename temporal.db \
+  --search-attribute DocumentId=Int \
+  --search-attribute SessionId=Keyword \
+  --search-attribute UploadedBy=Keyword \
+  --search-attribute ProcessingStep=Keyword
+```
+- gRPC (what Django/worker connects to): `localhost:7233`
+- Web UI (history, event logs, queries): http://localhost:8233
+
+### `.env` settings
+```
+TEMPORAL_SERVER_URL=localhost:7233
+TEMPORAL_NAMESPACE=default
+TEMPORAL_TASK_QUEUE=document-processing
+```
+
+### Worker (own terminal, keep it running)
+Temporal only schedules work -- a worker process actually runs the workflow and its
+activities (it uses Django, so run it from the project root with the venv):
+```bash
+venv/bin/python manage.py run_temporal_worker
+```
+With the server up but no worker running, chat can still start a workflow (it just waits
+in the queue) and status questions fall back to the saved DB status.
+
+Later, when Keycloak is added, this moves to Docker (`temporalio/auto-setup` + Postgres);
+only `TEMPORAL_SERVER_URL` changes in `.env`.
 
 ```All system run commands```
 # 1. Redis (Celery ka broker, Channels ka Channel Layer bhi)
